@@ -1,4 +1,5 @@
 import asyncio
+import uvloop
 
 import aiomonitor
 from aiohttp import web
@@ -28,4 +29,5 @@ async def main():
         await web._run_app(app, port=8090, host='localhost')
 
 
+uvloop.install()
 asyncio.run(main())

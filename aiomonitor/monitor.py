@@ -20,9 +20,10 @@ from terminaltables import AsciiTable
 
 from .task import TracedTask
 from .utils import (
-    _format_stack,
+    _filter_stack,
     _get_stack,
     _extract_stack,
+    _format_task,
     cancel_task,
     task_by_id,
     console_proxy,
@@ -159,14 +160,7 @@ class Monitor:
         except RuntimeError:
             parent_task = None
         task = TracedTask(coro, loop=self._loop)
-        stack = _extract_stack(sys._getframe())[:-1]  # strip this wrapper method
-        # strip the task factory frame in the vanilla event loop
-        if stack[-1].filename.endswith('asyncio/base_events.py') and stack[-1].name == 'create_task':
-            stack = stack[:-1]
-        # strip the loop.create_task frame
-        if stack[-1].filename.endswith('asyncio/tasks.py') and stack[-1].name == 'create_task':
-            stack = stack[:-1]
-        self._created_tracebacks[task] = stack
+        self._created_tracebacks[task] = _extract_stack(sys._getframe())[:-1]  # strip this wrapper method
         if parent_task is not None:
             self._created_traceback_chains[task] = parent_task
         return task
@@ -395,44 +389,37 @@ class Monitor:
 
     @alt_names('w')
     def do_where(self, taskid: int) -> None:
-        """Show stack frames for a task"""
-        task = task_by_id(taskid, self._loop)
-        if task:
-            self._sout.write(_format_stack(task, _get_stack))
-            self._sout.write('\n')
-        else:
-            self._sout.write('No task %d\n' % taskid)
-
-    @alt_names('trace-creation')
-    def do_trace_creation(self, taskid: int) -> None:
-        """Show traceback of creation of a task"""
+        """Show stack frames and its task creation chain of a task"""
         depth = 0
         task = task_by_id(taskid, self._loop)
-        if not task:
+        if task is None:
             self._sout.write('No task %d\n' % taskid)
             return
-        task_chain = []
+        task_chain: List[asyncio.Task[Any]] = []
         while task is not None:
             task_chain.append(task)
             task = self._created_traceback_chains.get(task)
+        self._sout.write('Initiated from the event loop:\n\n')
         for task in reversed(task_chain):
             stack = self._created_tracebacks.get(task)
             if stack is None:
-                self._sout.write('Missing task stack.\n')
+                if depth == 0:  # the root task
+                    continue
+                self._sout.write('  No stack for task %s\n' % _format_task(task))
             else:
                 if depth > 0:
-                    self._sout.write('\nCreated from the above task:\n\n')
-                cut_idx = 0
-                for cut_idx, f in reversed(list(enumerate(stack))):
-                    # uvloop
-                    if f.filename.endswith('asyncio/runners.py') and f.name == 'run':
-                        break
-                    # vanilla
-                    if f.filename.endswith('asyncio/events.py') and f.name == '_run':
-                        break
-                self._sout.write(''.join(traceback.format_list(stack[cut_idx + 1:])))
+                    self._sout.write('Created from the above task:\n\n')
+                stack = _filter_stack(stack)
+                self._sout.write(''.join(traceback.format_list(stack)))
                 depth += 1
-            task = self._created_traceback_chains.get(task)
+            self._sout.write('\n')
+        task = task_chain[0]
+        self._sout.write('Stack for %s (most recent call last):\n\n' % _format_task(task))
+        stack = _get_stack(task)
+        if not stack:
+            self._sout.write('  No stack for %s' % _format_task(task))
+        else:
+            self._sout.write(''.join(traceback.format_list(stack)))
         self._sout.write('\n')
 
     def do_signal(self, signame: str) -> None:
