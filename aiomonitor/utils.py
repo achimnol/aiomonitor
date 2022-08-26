@@ -6,7 +6,8 @@ import sys
 import telnetlib
 import traceback
 from concurrent.futures import Future  # noqa
-from typing import Callable, IO, Any, Optional, List, Set  # noqa
+from types import FrameType
+from typing import Callable, IO, Iterable, Any, Optional, List, Set, Sequence  # noqa
 
 import aioconsole
 
@@ -16,7 +17,7 @@ from .mypy_types import Loop, OptLocals
 Server = asyncio.AbstractServer  # noqa
 
 
-def _get_stack(task: 'asyncio.Task[Any]') -> List[Any]:
+def _get_stack(task: 'asyncio.Task[Any]') -> Iterable[FrameType]:
     frames = []  # type: List[Any]
     coro = task._coro  # type: ignore
     while coro:
@@ -48,6 +49,11 @@ def _format_stack(task: 'asyncio.Task[Any]') -> str:
         resp = 'Stack for %r (most recent call last):\n' % task
         resp += ''.join(traceback.format_list(extracted_list))  # type: ignore
     return resp
+
+def _extract_stack(frame: FrameType) -> Sequence[traceback.FrameSummary]:
+    stack = traceback.StackSummary.extract(traceback.walk_stack(frame))
+    stack.reverse()
+    return stack
 
 
 def task_by_id(taskid: int, loop: Loop) -> 'Optional[asyncio.Task[Any]]':

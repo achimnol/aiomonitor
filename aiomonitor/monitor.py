@@ -7,6 +7,7 @@ import socket
 import sys
 import threading
 import traceback
+import weakref
 from textwrap import wrap
 from types import TracebackType
 from typing import (IO, Dict, Any, Callable, Optional, Tuple, Generator,  # noqa
@@ -17,8 +18,19 @@ from concurrent.futures import Future  # noqa
 
 from terminaltables import AsciiTable
 
-from .utils import (_format_stack, cancel_task, task_by_id, console_proxy,
-                    init_console_server, close_server, alt_names, all_tasks)
+from .task import TracedTask
+from .utils import (
+    _format_stack,
+    _get_stack,
+    _extract_stack,
+    cancel_task,
+    task_by_id,
+    console_proxy,
+    init_console_server,
+    close_server,
+    alt_names,
+    all_tasks,
+)
 from .mypy_types import Loop, OptLocals
 
 
@@ -93,6 +105,11 @@ class Monitor:
 
         self.lastcmd = None  # type: Optional[str]
 
+        self._created_traceback_chains = weakref.WeakKeyDictionary()
+        self._created_tracebacks = weakref.WeakKeyDictionary()
+        self._cancelled_traceback_chains = weakref.WeakKeyDictionary()
+        self._cancelled_tracebacks = weakref.WeakKeyDictionary()
+
     def __repr__(self) -> str:
         name = self.__class__.__name__
         return '<{name}: {host}:{port}>'.format(
@@ -103,6 +120,7 @@ class Monitor:
         assert not self._started
 
         self._started = True
+        self._loop.set_task_factory(self._create_task)
         self._event_loop_thread_id = threading.get_ident()
         self._ui_thread.start()
 
@@ -128,6 +146,25 @@ class Monitor:
             self._closing.set()
             self._ui_thread.join()
             self._closed = True
+
+    def _create_task(self, loop, coro) -> asyncio.Task:
+        assert loop is self._loop
+        try:
+            parent_task = asyncio.current_task()
+        except RuntimeError:
+            parent_task = None
+        task = TracedTask(coro, loop=self._loop)
+        stack = _extract_stack(sys._getframe())[:-1]  # strip this wrapper method
+        # strip the task factory frame in the vanilla event loop
+        if stack[-1].filename.endswith('asyncio/base_events.py') and stack[-1].name == 'create_task':
+            stack = stack[:-1]
+        # strip the loop.create_task frame
+        if stack[-1].filename.endswith('asyncio/tasks.py') and stack[-1].name == 'create_task':
+            stack = stack[:-1]
+        self._created_tracebacks[task] = stack
+        if parent_task is not None:
+            self._created_traceback_chains[task] = parent_task
+        return task
 
     def _server(self) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -356,10 +393,39 @@ class Monitor:
         """Show stack frames for a task"""
         task = task_by_id(taskid, self._loop)
         if task:
-            self._sout.write(_format_stack(task))
+            self._sout.write(_format_stack(task, _get_stack))
             self._sout.write('\n')
         else:
             self._sout.write('No task %d\n' % taskid)
+
+    @alt_names('trace-creation')
+    def do_trace_creation(self, taskid: int) -> None:
+        """Show traceback of creation of a task"""
+        depth = 0
+        task = task_by_id(taskid, self._loop)
+        if not task:
+            self._sout.write('No task %d\n' % taskid)
+            return
+        while task is not None:
+            stack = self._created_tracebacks.get(task)
+            if stack is None:
+                self._sout.write('Missing task stack.\n')
+            else:
+                if depth > 0:
+                    self._sout.write('---- chained ----\n')
+                cut_idx = 0
+                for cut_idx, f in reversed(list(enumerate(stack))):
+                    # uvloop
+                    if f.filename.endswith('asyncio/runners.py') and f.name == 'run':
+                        break
+                    # vanilla
+                    if f.filename.endswith('asyncio/events.py') and f.name == '_run':
+                        break
+                self._sout.write(''.join(traceback.format_list(stack[cut_idx + 1:])))
+                self._sout.write('\n')
+                print("")
+                depth += 1
+            task = self._created_traceback_chains.get(task)
 
     def do_signal(self, signame: str) -> None:
         """Send a Unix signal"""
