@@ -145,6 +145,7 @@ class Monitor:
         if not self._closed:
             self._closing.set()
             self._ui_thread.join()
+            self._loop.set_task_factory(None)
             self._closed = True
 
     def _create_task(self, loop, coro) -> asyncio.Task:
