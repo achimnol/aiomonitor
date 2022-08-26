@@ -6,9 +6,11 @@ import signal
 import socket
 import sys
 import threading
+import time
 import traceback
 import weakref
 from asyncio.coroutines import _format_coroutine
+from datetime import timedelta
 from types import TracebackType
 from typing import (IO, Dict, Any, Callable, Optional, Tuple, Generator,  # noqa
                     List, Type, TypeVar, NamedTuple, get_type_hints,  # noqa
@@ -22,6 +24,7 @@ from .task import TracedTask
 from .utils import (
     _filter_stack,
     _format_filename,
+    _format_timedelta,
     _extract_stack_from_task,
     _extract_stack_from_frame,
     _format_task,
@@ -376,30 +379,39 @@ class Monitor:
     @alt_names('p')
     def do_ps(self) -> None:
         """Show task table"""
-        headers = ('Task ID', 'State', 'Name', 'Coroutine', 'Created Location')
-        table_data: List[Tuple[str, str, str, str, str]] = [headers]
+        headers = ('Task ID', 'State', 'Name', 'Coroutine', 'Created Location', 'Running Since')
+        table_data: List[Tuple[str, str, str, str, str, str]] = [headers]
         for task in sorted(all_tasks(loop=self._loop), key=id):
             taskid = str(id(task))
             if task:
                 coro = _format_coroutine(task.get_coro()).partition(" ")[0]
                 creation_stack = self._created_tracebacks.get(task)
                 if creation_stack is None:
-                    created_at = "(unknown)"
+                    created_location = "(unknown)"
                 else:
                     creation_stack = _filter_stack(creation_stack)
                     fn = _format_filename(creation_stack[0].filename)
-                    created_at = f"{fn}:{creation_stack[0].lineno}"
+                    created_location = f"{fn}:{creation_stack[0].lineno}"
+                if isinstance(task, TracedTask):
+                    running_since = _format_timedelta(timedelta(
+                        seconds=(time.monotonic() - task._started_at),
+                    ))
+                else:
+                    # requires task factory hook
+                    running_since = "(unknown)"
                 table_data.append(
                     (
                         taskid,
                         task._state,
                         task.get_name(),
                         coro,
-                        created_at,
+                        created_location,
+                        running_since,
                     )
                 )
         table = AsciiTable(table_data)
         table.inner_row_border = False
+        table.inner_column_border = False
         self._sout.write(table.table)
         self._sout.write('\n')
         self._sout.flush()
