@@ -50,7 +50,7 @@ def _filter_stack(stack: List[traceback.FrameSummary]) -> List[traceback.FrameSu
     return stack[cut_idx + 1:]
 
 
-def _get_stack_from_task(task: asyncio.Task[Any]) -> List[traceback.FrameSummary]:
+def _extract_stack_from_task(task: asyncio.Task[Any]) -> List[traceback.FrameSummary]:
     """
     Extracts the stack as a list of FrameSummary objects from an asyncio task.
     """
