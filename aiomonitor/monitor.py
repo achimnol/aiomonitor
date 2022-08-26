@@ -401,7 +401,7 @@ class Monitor:
         while task is not None:
             task_chain.append(task)
             task = self._created_traceback_chains.get(task)
-        self._sout.write('Initiated from the event loop:\n\n')
+        self._sout.write('The task scheduled from the event loop:\n\n')
         for task in reversed(task_chain):
             stack = self._created_tracebacks.get(task)
             if stack is None:
@@ -416,7 +416,7 @@ class Monitor:
                 depth += 1
             self._sout.write('\n')
         task = task_chain[0]
-        self._sout.write('Stack for %s (most recent call last):\n\n' % _format_task(task))
+        self._sout.write('Stack for %s created from the above task (most recent call last):\n\n' % _format_task(task))
         stack = _get_stack(task)
         if not stack:
             self._sout.write('  No stack for %s' % _format_task(task))
