@@ -379,7 +379,7 @@ class Monitor:
     @alt_names('p')
     def do_ps(self) -> None:
         """Show task table"""
-        headers = ('Task ID', 'State', 'Name', 'Coroutine', 'Created Location', 'Running Since')
+        headers = ('Task ID', 'State', 'Name', 'Coroutine', 'Created Location', 'Since Created')
         table_data: List[Tuple[str, str, str, str, str, str]] = [headers]
         for task in sorted(all_tasks(loop=self._loop), key=id):
             taskid = str(id(task))
