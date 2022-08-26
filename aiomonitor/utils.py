@@ -8,6 +8,7 @@ import selectors
 import sys
 import telnetlib
 import traceback
+from asyncio.coroutines import _format_coroutine
 from concurrent.futures import Future  # noqa
 from types import FrameType
 from typing import Callable, IO, Any, Optional, List, Set, Sequence  # noqa
@@ -24,8 +25,8 @@ def _format_task(task: asyncio.Task[Any]) -> str:
     """
     A simpler version of task's repr()
     """
-    state = task._state.upper()
-    return f"<Task(name={task.get_name()}, state={state})>"
+    coro = _format_coroutine(task.get_coro()).partition(" ")[0]
+    return f"<Task name={task.get_name()} coro={coro}>"
 
 
 def _filter_stack(stack: List[traceback.FrameSummary]) -> List[traceback.FrameSummary]:

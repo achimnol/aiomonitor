@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import inspect
 import logging
@@ -251,7 +249,7 @@ class Monitor:
             result = self._empty_result
             caught_ex = e
             msg = 'Probably incorrect number of arguments to command method:\n{}\n'  # noqa
-            self._sout.write(msg.format(repr(e)))
+            traceback.print_exc(file=self._sout)
         except Exception as e:
             result = self._empty_result
             caught_ex = e
@@ -401,25 +399,26 @@ class Monitor:
         while task is not None:
             task_chain.append(task)
             task = self._created_traceback_chains.get(task)
-        self._sout.write('The task scheduled from the event loop:\n\n')
+        prev_task = None
         for task in reversed(task_chain):
+            if depth == 0:
+                self._sout.write('Stack of the root task or coroutine scheduled in the event loop (most recent call last):\n\n')
+            elif depth > 0:
+                self._sout.write('Stack of %s to create the next task (most recent call last):\n\n' % _format_task(prev_task))
             stack = self._created_tracebacks.get(task)
             if stack is None:
-                if depth == 0:  # the root task
-                    continue
-                self._sout.write('  No stack for task %s\n' % _format_task(task))
+                self._sout.write('  No stack available (maybe it is a native code or the event loop)\n')
             else:
-                if depth > 0:
-                    self._sout.write('Created from the above task:\n\n')
                 stack = _filter_stack(stack)
                 self._sout.write(''.join(traceback.format_list(stack)))
-                depth += 1
+            prev_task = task
+            depth += 1
             self._sout.write('\n')
         task = task_chain[0]
-        self._sout.write('Stack for %s created from the above task (most recent call last):\n\n' % _format_task(task))
+        self._sout.write('Stack of %s (most recent call last):\n\n' % _format_task(task))
         stack = _get_stack(task)
         if not stack:
-            self._sout.write('  No stack for %s' % _format_task(task))
+            self._sout.write('  No stack available for %s' % _format_task(task))
         else:
             self._sout.write(''.join(traceback.format_list(stack)))
         self._sout.write('\n')
