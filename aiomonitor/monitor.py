@@ -8,7 +8,7 @@ import sys
 import threading
 import traceback
 import weakref
-from textwrap import wrap
+from asyncio.coroutines import _format_coroutine
 from types import TracebackType
 from typing import (IO, Dict, Any, Callable, Optional, Tuple, Generator,  # noqa
                     List, Type, TypeVar, NamedTuple, get_type_hints,  # noqa
@@ -21,6 +21,7 @@ from terminaltables import AsciiTable
 from .task import TracedTask
 from .utils import (
     _filter_stack,
+    _format_filename,
     _extract_stack_from_task,
     _extract_stack_from_frame,
     _format_task,
@@ -375,14 +376,30 @@ class Monitor:
     @alt_names('p')
     def do_ps(self) -> None:
         """Show task table"""
-        headers = ('Task ID', 'State', 'Task')
-        table_data = [headers]
+        headers = ('Task ID', 'State', 'Name', 'Coroutine', 'Created At')
+        table_data: List[Tuple[str, str, str, str, str]] = [headers]
         for task in sorted(all_tasks(loop=self._loop), key=id):
             taskid = str(id(task))
             if task:
-                t = '\n'.join(wrap(str(task), 80))
-                table_data.append((taskid, task._state, t))
+                coro = _format_coroutine(task.get_coro()).partition(" ")[0]
+                creation_stack = self._created_tracebacks.get(task)
+                if creation_stack is None:
+                    created_at = "(unknown)"
+                else:
+                    creation_stack = _filter_stack(creation_stack)
+                    fn = _format_filename(creation_stack[0].filename)
+                    created_at = f"{fn}:{creation_stack[0].lineno}"
+                table_data.append(
+                    (
+                        taskid,
+                        task._state,
+                        task.get_name(),
+                        coro,
+                        created_at,
+                    )
+                )
         table = AsciiTable(table_data)
+        table.inner_row_border = False
         self._sout.write(table.table)
         self._sout.write('\n')
         self._sout.flush()

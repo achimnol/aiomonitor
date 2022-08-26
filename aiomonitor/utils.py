@@ -10,6 +10,7 @@ import telnetlib
 import traceback
 from asyncio.coroutines import _format_coroutine
 from concurrent.futures import Future  # noqa
+from pathlib import Path
 from types import FrameType
 from typing import Callable, IO, Any, Optional, List, Set, Sequence  # noqa
 
@@ -27,6 +28,25 @@ def _format_task(task: asyncio.Task[Any]) -> str:
     """
     coro = _format_coroutine(task.get_coro()).partition(" ")[0]
     return f"<Task name={task.get_name()} coro={coro}>"
+
+
+def _format_filename(filename: str) -> str:
+    """
+    Simplifies the site-pkg directory path of the given source filename.
+    """
+    stdlib = f"{sys.prefix}/lib/python{sys.version_info.major}.{sys.version_info.minor}/"
+    site_pkg = f"{sys.prefix}/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/"
+    home = f"{Path.home()}/"
+    cwd = f"{Path.cwd()}/"
+    if filename.startswith(site_pkg):
+        return "<site-pkg>/" + filename[len(site_pkg):]
+    if filename.startswith(stdlib):
+        return "<stdlib>/" + filename[len(stdlib):]
+    if filename.startswith(cwd):
+        return "<cwd>/" + filename[len(cwd):]
+    if filename.startswith(home):
+        return "<home>/" + filename[len(home):]
+    return filename
 
 
 def _filter_stack(stack: List[traceback.FrameSummary]) -> List[traceback.FrameSummary]:
