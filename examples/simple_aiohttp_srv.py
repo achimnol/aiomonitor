@@ -24,7 +24,7 @@ async def main():
     loop = asyncio.get_running_loop()
     app = web.Application()
     app.router.add_get('/simple', simple)
-    with aiomonitor.start_monitor(loop):
+    with aiomonitor.start_monitor(loop, hook_task_factory=True):
         await web._run_app(app, port=8090, host='localhost')
 
 

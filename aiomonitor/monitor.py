@@ -411,13 +411,17 @@ class Monitor:
         if not task:
             self._sout.write('No task %d\n' % taskid)
             return
+        task_chain = []
         while task is not None:
+            task_chain.append(task)
+            task = self._created_traceback_chains.get(task)
+        for task in reversed(task_chain):
             stack = self._created_tracebacks.get(task)
             if stack is None:
                 self._sout.write('Missing task stack.\n')
             else:
                 if depth > 0:
-                    self._sout.write('---- chained ----\n')
+                    self._sout.write('\nCreated from the above task:\n\n')
                 cut_idx = 0
                 for cut_idx, f in reversed(list(enumerate(stack))):
                     # uvloop
@@ -427,10 +431,9 @@ class Monitor:
                     if f.filename.endswith('asyncio/events.py') and f.name == '_run':
                         break
                 self._sout.write(''.join(traceback.format_list(stack[cut_idx + 1:])))
-                self._sout.write('\n')
-                print("")
                 depth += 1
             task = self._created_traceback_chains.get(task)
+        self._sout.write('\n')
 
     def do_signal(self, signame: str) -> None:
         """Send a Unix signal"""
@@ -489,10 +492,12 @@ def start_monitor(loop: Loop, *,
                   port: int = MONITOR_PORT,
                   console_port: int = CONSOLE_PORT,
                   console_enabled: bool = True,
+                  hook_task_factory: bool = False,
                   locals: OptLocals = None) -> Monitor:
 
     m = monitor(loop, host=host, port=port, console_port=console_port,
-                console_enabled=console_enabled, locals=locals)
+                console_enabled=console_enabled, hook_task_factory=hook_task_factory,
+                locals=locals)
     m.start()
 
     return m
