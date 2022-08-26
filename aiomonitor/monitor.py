@@ -21,8 +21,8 @@ from terminaltables import AsciiTable
 from .task import TracedTask
 from .utils import (
     _filter_stack,
-    _get_stack,
-    _extract_stack,
+    _extract_stack_from_task,
+    _extract_stack_from_frame,
     _format_task,
     cancel_task,
     task_by_id,
@@ -160,7 +160,7 @@ class Monitor:
         except RuntimeError:
             parent_task = None
         task = TracedTask(coro, loop=self._loop)
-        self._created_tracebacks[task] = _extract_stack(sys._getframe())[:-1]  # strip this wrapper method
+        self._created_tracebacks[task] = _extract_stack_from_frame(sys._getframe())[:-1]  # strip this wrapper method
         if parent_task is not None:
             self._created_traceback_chains[task] = parent_task
         return task
@@ -417,7 +417,7 @@ class Monitor:
             self._sout.write('\n')
         task = task_chain[0]
         self._sout.write('Stack of %s (most recent call last):\n\n' % _format_task(task))
-        stack = _get_stack(task)
+        stack = _extract_stack_from_task(task)
         if not stack:
             self._sout.write('  No stack available for %s' % _format_task(task))
         else:
