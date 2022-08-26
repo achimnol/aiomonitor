@@ -86,6 +86,7 @@ class Monitor:
                  port: int = MONITOR_PORT,
                  console_port: int = CONSOLE_PORT,
                  console_enabled: bool = True,
+                 hook_task_factory: bool = False,
                  locals: OptLocals = None) -> None:
         self._loop = loop or asyncio.get_event_loop()
         self._host = host
@@ -105,6 +106,7 @@ class Monitor:
 
         self.lastcmd = None  # type: Optional[str]
 
+        self._hook_task_factory = hook_task_factory
         self._created_traceback_chains = weakref.WeakKeyDictionary()
         self._created_tracebacks = weakref.WeakKeyDictionary()
         self._cancelled_traceback_chains = weakref.WeakKeyDictionary()
@@ -120,7 +122,9 @@ class Monitor:
         assert not self._started
 
         self._started = True
-        self._loop.set_task_factory(self._create_task)
+        self._original_task_factory = self._loop.get_task_factory()
+        if self._hook_task_factory:
+            self._loop.set_task_factory(self._create_task)
         self._event_loop_thread_id = threading.get_ident()
         self._ui_thread.start()
 
@@ -145,7 +149,7 @@ class Monitor:
         if not self._closed:
             self._closing.set()
             self._ui_thread.join()
-            self._loop.set_task_factory(None)
+            self._loop.set_task_factory(self._original_task_factory)
             self._closed = True
 
     def _create_task(self, loop, coro) -> asyncio.Task:
