@@ -386,8 +386,10 @@ class Monitor:
             if task:
                 coro = _format_coroutine(task.get_coro()).partition(" ")[0]
                 creation_stack = self._created_tracebacks.get(task)
+                # Some values are masked as "-" when they are unavailable
+                # if it's the root task/coro or if the task factory is not applied.
                 if creation_stack is None:
-                    created_location = "(unknown)"
+                    created_location = "-"
                 else:
                     creation_stack = _filter_stack(creation_stack)
                     fn = _format_filename(creation_stack[0].filename)
@@ -397,8 +399,7 @@ class Monitor:
                         seconds=(time.monotonic() - task._started_at),
                     ))
                 else:
-                    # requires task factory hook
-                    running_since = "(unknown)"
+                    running_since = "-"
                 table_data.append(
                     (
                         taskid,
