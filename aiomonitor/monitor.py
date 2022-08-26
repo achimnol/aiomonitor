@@ -404,10 +404,11 @@ class Monitor:
             if depth == 0:
                 self._sout.write('Stack of the root task or coroutine scheduled in the event loop (most recent call last):\n\n')
             elif depth > 0:
-                self._sout.write('Stack of %s to create the next task (most recent call last):\n\n' % _format_task(prev_task))
+                assert prev_task is not None
+                self._sout.write('Stack of %s when creating the next task (most recent call last):\n\n' % _format_task(prev_task))
             stack = self._created_tracebacks.get(task)
             if stack is None:
-                self._sout.write('  No stack available (maybe it is a native code or the event loop)\n')
+                self._sout.write('  No stack available (maybe it is a native code or the event loop itself)\n')
             else:
                 stack = _filter_stack(stack)
                 self._sout.write(''.join(traceback.format_list(stack)))
