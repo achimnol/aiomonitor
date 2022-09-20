@@ -206,13 +206,13 @@ class Monitor:
         return task
 
     def _server(self) -> None:
-        telnet_server = TelnetServer(interact=self._interact, host=self._host, port=self._port)
-        asyncio.run(self._server_async(telnet_server))
+        asyncio.run(self._server_async())
 
-    async def _server_async(self, telnet_server: TelnetServer) -> None:
+    async def _server_async(self) -> None:
         loop = asyncio.get_running_loop()
         self._telnet_server_loop = loop
         self._telnet_server_future = loop.create_future()
+        telnet_server = TelnetServer(interact=self._interact, host=self._host, port=self._port)
         telnet_server.start()
         try:
             await self._telnet_server_future
