@@ -1,41 +1,56 @@
 import argparse
-import os
 import shutil
 import struct
-import sys
 import telnetlib
 
 from .monitor import MONITOR_HOST, MONITOR_PORT
 
 
 def opt_callback(sock, command, option):
-    if command == telnetlib.DO and option == b'\x18':  # terminal type
-        sock.send(b''.join([
+    if command == telnetlib.DO and option == telnetlib.TTYPE:
+        sock.sendall(b''.join([
             telnetlib.IAC,
             telnetlib.WILL,
-            b'\x18',
+            telnetlib.TTYPE,
             telnetlib.IAC,
             telnetlib.SB,
-            b'\x18\x00',
-            os.environ.get('TERM', 'xterm').encode('ascii'),
+            telnetlib.TTYPE,
+            telnetlib.BINARY,
+            b"unknown",  # "raw" terminal
             telnetlib.IAC,
             telnetlib.SE,
         ]))
-    elif command == telnetlib.DO and option == b'\x1f':  # window size
+    elif command == telnetlib.DO and option == telnetlib.NAWS:
         term_size = shutil.get_terminal_size()
-        sock.send(b''.join([
+        sock.sendall(b''.join([
             telnetlib.IAC,
             telnetlib.WILL,
-            b'\x1f',
+            telnetlib.NAWS,
             telnetlib.IAC,
             telnetlib.SB,
-            b'\x1f',
+            telnetlib.NAWS,
             struct.pack('>HH', term_size.columns, term_size.lines),
             telnetlib.IAC,
             telnetlib.SE,
         ]))
-    else:
-        print("OPT_CALLBACK", sock, command, option, file=sys.stderr)
+    elif command == telnetlib.DO and option == telnetlib.LINEMODE:
+        sock.sendall(b''.join([
+            telnetlib.IAC,
+            telnetlib.WONT,
+            telnetlib.LINEMODE,
+        ]))
+    elif command == telnetlib.DO and option == telnetlib.CHARSET:
+        sock.sendall(b''.join([
+            telnetlib.IAC,
+            telnetlib.WILL,
+            telnetlib.CHARSET,
+            telnetlib.IAC,
+            telnetlib.SB,
+            telnetlib.CHARSET,
+            b"en_US.ASCII",
+            telnetlib.IAC,
+            telnetlib.SE,
+        ]))
 
 
 def monitor_client(host: str, port: int) -> None:
