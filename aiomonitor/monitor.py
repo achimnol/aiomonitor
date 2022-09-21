@@ -212,7 +212,9 @@ class Monitor:
         loop = asyncio.get_running_loop()
         self._telnet_server_loop = loop
         self._telnet_server_future = loop.create_future()
-        telnet_server = TelnetServer(interact=self._interact, host=self._host, port=self._port)
+        telnet_server = TelnetServer(
+            interact=self._interact, host=self._host, port=self._port
+        )
         telnet_server.start()
         try:
             await self._telnet_server_future
@@ -529,7 +531,9 @@ class Monitor:
         assert self._sout is not None
         task = task_by_id(taskid, self._monitored_loop)
         if task:
-            fut = asyncio.run_coroutine_threadsafe(cancel_task(task), loop=self._monitored_loop)
+            fut = asyncio.run_coroutine_threadsafe(
+                cancel_task(task), loop=self._monitored_loop
+            )
             fut.result(timeout=3)
             self._sout.write("Cancel task %d\n" % taskid)
         else:
@@ -561,7 +565,9 @@ class Monitor:
             console_proxy(self._sin, self._sout, self._host, self._console_port)
         finally:
             coro = close_server(server)
-            close_fut = asyncio.run_coroutine_threadsafe(coro, loop=self._monitored_loop)
+            close_fut = asyncio.run_coroutine_threadsafe(
+                coro, loop=self._monitored_loop
+            )
             close_fut.result(timeout=15)
 
 

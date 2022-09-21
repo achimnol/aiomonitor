@@ -75,7 +75,9 @@ class TelnetClient:
             cc=cc,
         )
 
-    async def _create_stdio_streams(self) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    async def _create_stdio_streams(
+        self,
+    ) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         loop = asyncio.get_running_loop()
         stdin_reader = asyncio.StreamReader()
         stdin_protocol = asyncio.StreamReaderProtocol(stdin_reader)
@@ -85,11 +87,15 @@ class TelnetClient:
             asyncio.streams.FlowControlMixin,
             write_target,
         )
-        stdout_writer = asyncio.StreamWriter(writer_transport, writer_protocol, stdin_reader, loop)
+        stdout_writer = asyncio.StreamWriter(
+            writer_transport, writer_protocol, stdin_reader, loop
+        )
         return stdin_reader, stdout_writer
 
     async def __aenter__(self) -> TelnetClient:
-        self._conn_reader, self._conn_writer = await asyncio.open_connection(self._host, self._port)
+        self._conn_reader, self._conn_writer = await asyncio.open_connection(
+            self._host, self._port
+        )
         self._closed = asyncio.Event()
         self._stdin_reader, self._stdout_writer = await self._create_stdio_streams()
         self._read_task = asyncio.create_task(self._read())
@@ -184,9 +190,9 @@ class TelnetClient:
                             buf += await self._conn_reader.readexactly(
                                 3 - (len(buf) - cmd_begin),
                             )
-                        command = buf[cmd_begin + 1:cmd_begin + 2]
-                        option = buf[cmd_begin + 2:cmd_begin + 3]
-                        buf_before, buf_after = buf[:cmd_begin], buf[cmd_begin + 3:]
+                        command = buf[cmd_begin + 1 : cmd_begin + 2]
+                        option = buf[cmd_begin + 2 : cmd_begin + 3]
+                        buf_before, buf_after = buf[:cmd_begin], buf[cmd_begin + 3 :]
                         self._stdout_writer.write(buf_before)
                         await self._stdout_writer.drain()
                         if command in (
@@ -199,11 +205,18 @@ class TelnetClient:
                         elif command == telnetlib.SB:
                             subnego_end = buf_after.find(telnetlib.IAC + telnetlib.SE)
                             if subnego_end == -1:
-                                subnego_chunk = buf_after + (await self._conn_reader.readuntil(telnetlib.IAC + telnetlib.SE))[:-2]
+                                subnego_chunk = (
+                                    buf_after
+                                    + (
+                                        await self._conn_reader.readuntil(
+                                            telnetlib.IAC + telnetlib.SE
+                                        )
+                                    )[:-2]
+                                )
                                 buf_after = b""
                             else:
                                 subnego_chunk = buf_after[:subnego_end]
-                                buf_after = buf_after[subnego_end + 2:]
+                                buf_after = buf_after[subnego_end + 2 :]
                             await self._handle_sb(option, subnego_chunk)
                         buf = buf_after
         finally:
