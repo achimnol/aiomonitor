@@ -82,7 +82,7 @@ current_stdout: ContextVar[TextIO] = ContextVar("current_stdout")
 
 
 def _get_current_stdout() -> TextIO:
-    stdout = current_stdout.get(default=None)
+    stdout = current_stdout.get(None)
     if stdout is None:
         return sys.stdout
     else:
@@ -90,7 +90,7 @@ def _get_current_stdout() -> TextIO:
 
 
 def _get_current_stderr() -> TextIO:
-    stdout = current_stdout.get(default=None)
+    stdout = current_stdout.get(None)
     if stdout is None:
         return sys.stderr
     else:
@@ -134,7 +134,7 @@ class Monitor:
         hook_task_factory: bool = False,
         locals: OptLocals = None,
     ) -> None:
-        self._monitored_loop = loop or asyncio.get_event_loop()
+        self._monitored_loop = loop or asyncio.get_running_loop()
         self._host = host
         self._port = port
         self._console_port = console_port
@@ -305,6 +305,8 @@ class Monitor:
                         lastcmd = user_input
                     except (click.BadParameter, click.UsageError) as e:
                         self._print_error(str(e))
+                    except asyncio.CancelledError:
+                        return
                     except Exception:
                         self._print_error(traceback.format_exc())
         finally:
@@ -365,10 +367,8 @@ def cancel(ctx, taskid: int) -> None:
 
 @monitor_cli.command(aliases=["q", "quit"])
 def exit(ctx) -> None:
-    """Leave the monitor"""
-    stdout = _get_current_stdout()
-    stdout.write("Leaving monitor. Hit Ctrl-C to exit\n")
-    stdout.flush()
+    """Leave the monitor client session"""
+    raise asyncio.CancelledError("exit by user")
 
 
 @monitor_cli.command()
