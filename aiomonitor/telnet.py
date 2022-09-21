@@ -4,12 +4,11 @@ import asyncio
 import collections
 import fcntl
 import os
-import termios
 import struct
 import sys
 import telnetlib
+import termios
 from typing import Dict, Optional, Tuple
-
 
 ModeDef = collections.namedtuple(
     "ModeDef", ["iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed", "cc"]

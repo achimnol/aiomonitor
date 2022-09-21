@@ -16,7 +16,6 @@ from contextlib import suppress
 from datetime import timedelta
 from types import TracebackType
 from typing import (
-    TextIO,
     Any,
     Callable,
     Generator,
@@ -24,12 +23,13 @@ from typing import (
     NamedTuple,
     Optional,
     Sequence,
+    TextIO,
     Tuple,
     Type,
 )
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.contrib.telnet.server import TelnetServer, TelnetConnection
+from prompt_toolkit.contrib.telnet.server import TelnetConnection, TelnetServer
 from terminaltables import AsciiTable
 
 from .mypy_types import Loop, OptLocals
