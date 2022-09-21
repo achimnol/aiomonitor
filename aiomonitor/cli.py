@@ -1,68 +1,24 @@
 import argparse
+import asyncio
+import os
 import shutil
 import struct
 import telnetlib
 
 from .monitor import MONITOR_HOST, MONITOR_PORT
+from .telnet import TelnetClient
 
 
-def opt_callback(sock, command, option):
-    if command == telnetlib.DO and option == telnetlib.TTYPE:
-        sock.sendall(b''.join([
-            telnetlib.IAC,
-            telnetlib.WILL,
-            telnetlib.TTYPE,
-            telnetlib.IAC,
-            telnetlib.SB,
-            telnetlib.TTYPE,
-            telnetlib.BINARY,
-            b"unknown",  # "raw" terminal
-            telnetlib.IAC,
-            telnetlib.SE,
-        ]))
-    elif command == telnetlib.DO and option == telnetlib.NAWS:
-        term_size = shutil.get_terminal_size()
-        sock.sendall(b''.join([
-            telnetlib.IAC,
-            telnetlib.WILL,
-            telnetlib.NAWS,
-            telnetlib.IAC,
-            telnetlib.SB,
-            telnetlib.NAWS,
-            struct.pack('>HH', term_size.columns, term_size.lines),
-            telnetlib.IAC,
-            telnetlib.SE,
-        ]))
-    elif command == telnetlib.DO and option == telnetlib.LINEMODE:
-        sock.sendall(b''.join([
-            telnetlib.IAC,
-            telnetlib.WONT,
-            telnetlib.LINEMODE,
-        ]))
-    elif command == telnetlib.DO and option == telnetlib.CHARSET:
-        sock.sendall(b''.join([
-            telnetlib.IAC,
-            telnetlib.WILL,
-            telnetlib.CHARSET,
-            telnetlib.IAC,
-            telnetlib.SB,
-            telnetlib.CHARSET,
-            b"en_US.ASCII",
-            telnetlib.IAC,
-            telnetlib.SE,
-        ]))
+async def async_monitor_client(host: str, port: int) -> None:
+    async with TelnetClient(host, port) as client:
+        await client.interact()
 
 
 def monitor_client(host: str, port: int) -> None:
-    tn = telnetlib.Telnet()
-    tn.set_option_negotiation_callback(opt_callback)
-    tn.open(host, port, timeout=1)
     try:
-        tn.interact()
-    except (EOFError, KeyboardInterrupt):
+        asyncio.run(async_monitor_client(host, port))
+    except KeyboardInterrupt:
         pass
-    finally:
-        tn.close()
 
 
 def main() -> None:
