@@ -28,7 +28,7 @@ from typing import (
     Type,
 )
 
-import prompt_toolkit
+from prompt_toolkit import PromptSession
 from prompt_toolkit.contrib.telnet.server import TelnetServer, TelnetConnection
 from terminaltables import AsciiTable
 
@@ -228,10 +228,10 @@ class Monitor:
         tasknum = len(all_tasks(loop=self._monitored_loop))
         s = "" if tasknum == 1 else "s"
         self._sout.write(self.intro.format(tasknum=tasknum, s=s))
-        prompt_session = prompt_toolkit.PromptSession(self.prompt)
+        prompt_session: PromptSession[str] = PromptSession(self.prompt)
         while True:
             try:
-                user_input = await prompt_session.prompt_async()
+                user_input = (await prompt_session.prompt_async()).strip()
             except (EOFError, KeyboardInterrupt):
                 return
             except Exception as e:

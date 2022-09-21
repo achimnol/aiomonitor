@@ -12,7 +12,7 @@ from typing import Dict, Optional, Tuple
 
 
 ModeDef = collections.namedtuple(
-    "mode", ["iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed", "cc"]
+    "ModeDef", ["iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed", "cc"]
 )
 
 
@@ -120,6 +120,7 @@ class TelnetClient:
                 pass
         finally:
             self.restore_mode()
+            return None
 
     async def interact(self) -> None:
         try:
