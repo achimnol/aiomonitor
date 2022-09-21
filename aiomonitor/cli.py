@@ -1,9 +1,5 @@
 import argparse
 import asyncio
-import os
-import shutil
-import struct
-import telnetlib
 
 from .monitor import MONITOR_HOST, MONITOR_PORT
 from .telnet import TelnetClient
