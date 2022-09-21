@@ -33,6 +33,6 @@ async def main():
 
 if __name__ == "__main__":
     logging.basicConfig()
-    logging.getLogger('aiomonitor').setLevel(logging.DEBUG)
+    logging.getLogger("aiomonitor").setLevel(logging.DEBUG)
     uvloop.install()
     asyncio.run(main())
