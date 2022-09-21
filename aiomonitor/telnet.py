@@ -17,6 +17,11 @@ ModeDef = collections.namedtuple(
 
 
 class TelnetClient:
+    """
+    A minimal telnet client-side protocol implementation to support `prompt_toolkit`.
+    Some details like terminal mode handling is taken from telnetlib3.
+    (https://github.com/jquast/telnetlib3)
+    """
 
     def __init__(self, host: str, port: int) -> None:
         self._host = host
@@ -90,7 +95,7 @@ class TelnetClient:
         self._stdin_reader, self._stdout_writer = await self._create_stdio_streams()
         self._read_task = asyncio.create_task(self._read())
         self._input_task = asyncio.create_task(self._input())
-        await asyncio.sleep(0.3)  # add some time for negotiation
+        await asyncio.sleep(0.3)  # wait for negotiation to complete
         self._saved_mode = self.get_mode()
         if self._isatty:
             assert self._saved_mode is not None
@@ -167,7 +172,7 @@ class TelnetClient:
         buf = b""
         try:
             while not self._conn_reader.at_eof():
-                buf += await self._conn_reader.read(64)
+                buf += await self._conn_reader.read(128)
                 while buf:
                     cmd_begin = buf.find(telnetlib.IAC)
                     if cmd_begin == -1:
