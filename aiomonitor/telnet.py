@@ -125,7 +125,7 @@ class TelnetClient:
                 pass
         finally:
             self.restore_mode()
-            return None
+        return None
 
     async def interact(self) -> None:
         try:
