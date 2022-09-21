@@ -261,15 +261,17 @@ class Monitor:
         )
 
     async def _interact(self, connection: TelnetConnection) -> None:
-        """Main interactive loop of the monitor"""
+        """
+        The interactive loop for each telnet client connection.
+        """
         await asyncio.sleep(0.3)  # wait until telnet negotiation is done
         tasknum = len(all_tasks(loop=self._monitored_loop))
         s = "" if tasknum == 1 else "s"
         print(self.intro.format(tasknum=tasknum, s=s), file=connection.stdout)
+        current_stdout_token = current_stdout.set(connection.stdout)
         prompt_session: PromptSession[str] = PromptSession()
         lastcmd = "help"
         style_prompt = "#5fd7ff bold"
-        current_stdout_token = current_stdout.set(connection.stdout)
         try:
             while True:
                 try:
