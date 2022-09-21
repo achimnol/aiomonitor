@@ -227,6 +227,7 @@ class Monitor:
         tasknum = len(all_tasks(loop=self._monitored_loop))
         s = "" if tasknum == 1 else "s"
         self._sout.write(self.intro.format(tasknum=tasknum, s=s))
+        await asyncio.sleep(0.3)
         prompt_session = prompt_toolkit.PromptSession(self.prompt)
         while True:
             try:

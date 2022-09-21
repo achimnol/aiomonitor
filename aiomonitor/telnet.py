@@ -27,19 +27,6 @@ class TelnetClient:
         self._isatty = os.path.sameopenfile(self._stdin.fileno(), self._stdout.fileno())
         self._remote_options: Dict[bytes, bool] = collections.defaultdict(lambda: False)
 
-    async def _create_stdio_streams(self) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        loop = asyncio.get_running_loop()
-        stdin_reader = asyncio.StreamReader()
-        stdin_protocol = asyncio.StreamReaderProtocol(stdin_reader)
-        await loop.connect_read_pipe(lambda: stdin_protocol, self._stdin)
-        write_target = self._stdin if self._isatty else self._stdout
-        writer_transport, writer_protocol = await loop.connect_write_pipe(
-            asyncio.streams.FlowControlMixin,
-            write_target,
-        )
-        stdout_writer = asyncio.StreamWriter(writer_transport, writer_protocol, None, loop)
-        return stdin_reader, stdout_writer
-
     def get_mode(self) -> Optional[ModeDef]:
         if self._isatty:
             return ModeDef(*termios.tcgetattr(self._stdin.fileno()))
@@ -84,14 +71,27 @@ class TelnetClient:
             cc=cc,
         )
 
+    async def _create_stdio_streams(self) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        loop = asyncio.get_running_loop()
+        stdin_reader = asyncio.StreamReader()
+        stdin_protocol = asyncio.StreamReaderProtocol(stdin_reader)
+        await loop.connect_read_pipe(lambda: stdin_protocol, self._stdin)
+        write_target = self._stdin if self._isatty else self._stdout
+        writer_transport, writer_protocol = await loop.connect_write_pipe(
+            asyncio.streams.FlowControlMixin,
+            write_target,
+        )
+        stdout_writer = asyncio.StreamWriter(writer_transport, writer_protocol, stdin_reader, loop)
+        return stdin_reader, stdout_writer
+
     async def __aenter__(self) -> TelnetClient:
         self._conn_reader, self._conn_writer = await asyncio.open_connection(self._host, self._port)
         self._closed = asyncio.Event()
         self._stdin_reader, self._stdout_writer = await self._create_stdio_streams()
         self._read_task = asyncio.create_task(self._read())
         self._input_task = asyncio.create_task(self._input())
-        self._saved_mode = self.get_mode()
         await asyncio.sleep(0.3)  # add some time for negotiation
+        self._saved_mode = self.get_mode()
         if self._isatty:
             assert self._saved_mode is not None
             self.set_mode(self.determine_mode(self._saved_mode))
@@ -128,6 +128,8 @@ class TelnetClient:
         try:
             while True:
                 buf = await self._stdin_reader.read(128)
+                if not buf:
+                    return
                 self._conn_writer.write(buf)
                 await self._conn_writer.drain()
         except asyncio.CancelledError:
@@ -152,6 +154,9 @@ class TelnetClient:
             await self._conn_writer.drain()
         elif command == telnetlib.WILL:
             self._remote_options[option] = True
+            if option in (telnetlib.ECHO, telnetlib.BINARY, telnetlib.SGA):
+                self._conn_writer.write(telnetlib.IAC + telnetlib.DO + option)
+                await self._conn_writer.drain()
         elif command == telnetlib.WONT:
             self._remote_options[option] = False
 
