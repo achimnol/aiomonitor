@@ -12,23 +12,15 @@ import traceback
 import weakref
 from asyncio.coroutines import _format_coroutine  # type: ignore
 from concurrent.futures import Future
+from contextvars import ContextVar, copy_context
 from datetime import timedelta
 from types import TracebackType
-from typing import (
-    Any,
-    List,
-    NamedTuple,
-    Optional,
-    Sequence,
-    TextIO,
-    Tuple,
-    Type,
-)
+from typing import Any, List, NamedTuple, Optional, Sequence, TextIO, Tuple, Type
 
 import click
 from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.contrib.telnet.server import TelnetConnection, TelnetServer
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.shortcuts import print_formatted_text
 from terminaltables import AsciiTable
 
@@ -86,6 +78,23 @@ class ArgumentMappingException(CommandException):
 
 
 CmdName = NamedTuple("CmdName", [("cmd_name", str), ("method_name", str)])
+current_stdout: ContextVar[TextIO] = ContextVar("current_stdout")
+
+
+def _get_current_stdout() -> TextIO:
+    stdout = current_stdout.get(default=None)
+    if stdout is None:
+        return sys.stdout
+    else:
+        return stdout
+
+
+def _get_current_stderr() -> TextIO:
+    stdout = current_stdout.get(default=None)
+    if stdout is None:
+        return sys.stderr
+    else:
+        return stdout
 
 
 class Monitor:
@@ -99,7 +108,6 @@ class Monitor:
         "    {cmd_name}{cmd_arg_sep}{arg_list}: {doc_firstline}"  # noqa
     )
 
-    _sout: TextIO
     _created_traceback_chains: weakref.WeakKeyDictionary[
         asyncio.Task[Any],
         asyncio.Task[Any],
@@ -164,6 +172,11 @@ class Monitor:
             self._monitored_loop.set_task_factory(self._create_task)
         self._event_loop_thread_id = threading.get_ident()
         self._ui_thread.start()
+
+        # Override the Click's stdout/stderr reference cache functions
+        # to let them use the correct stdout handler.
+        click.utils._default_text_stdout = _get_current_stdout
+        click.utils._default_text_stderr = _get_current_stderr
 
     @property
     def closed(self) -> bool:
@@ -250,46 +263,51 @@ class Monitor:
     async def _interact(self, connection: TelnetConnection) -> None:
         """Main interactive loop of the monitor"""
         await asyncio.sleep(0.3)  # wait until telnet negotiation is done
-        self._sout = connection.stdout
         tasknum = len(all_tasks(loop=self._monitored_loop))
         s = "" if tasknum == 1 else "s"
-        print(self.intro.format(tasknum=tasknum, s=s), file=self._sout)
+        print(self.intro.format(tasknum=tasknum, s=s), file=connection.stdout)
         prompt_session: PromptSession[str] = PromptSession()
         lastcmd = "help"
         style_prompt = "#5fd7ff bold"
-        while True:
-            try:
-                user_input = (
-                    await prompt_session.prompt_async(
-                        FormattedText(
-                            [
-                                (style_prompt, self.prompt),
-                            ]
-                        )
-                    )
-                ).strip()
-            except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
-                return
-            except Exception:
-                self._print_error(traceback.format_exc())
-            else:
+        current_stdout_token = current_stdout.set(connection.stdout)
+        try:
+            while True:
                 try:
-                    if not user_input and lastcmd is not None:
-                        user_input = lastcmd
-                    assert self._sout is not None
-                    args = shlex.split(user_input)
-                    term_size = prompt_session.output.get_size()
-                    monitor_cli.main(
-                        args,
-                        obj=self,
-                        standalone_mode=False,
-                        max_content_width=term_size.columns,
-                    )
-                    lastcmd = user_input
-                except (click.BadParameter, click.UsageError) as e:
-                    self._print_error(str(e))
+                    user_input = (
+                        await prompt_session.prompt_async(
+                            FormattedText(
+                                [
+                                    (style_prompt, self.prompt),
+                                ]
+                            )
+                        )
+                    ).strip()
+                except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
+                    return
                 except Exception:
                     self._print_error(traceback.format_exc())
+                else:
+                    try:
+                        if not user_input and lastcmd is not None:
+                            user_input = lastcmd
+                        args = shlex.split(user_input)
+                        term_size = prompt_session.output.get_size()
+                        ctx = copy_context()
+                        ctx.run(
+                            monitor_cli.main,
+                            args,
+                            obj=self,
+                            standalone_mode=False,  # type: ignore
+                            max_content_width=term_size.columns,
+                        )
+                        click.echo("")
+                        lastcmd = user_input
+                    except (click.BadParameter, click.UsageError) as e:
+                        self._print_error(str(e))
+                    except Exception:
+                        self._print_error(traceback.format_exc())
+        finally:
+            current_stdout.reset(current_stdout_token)
 
 
 @monitor_cli.command(aliases=["?", "h"])
@@ -300,10 +318,9 @@ def help(ctx, cmd_names: Sequence[str]) -> None:
     Any number of command names may be given to help, and the long help
     text for all of them will be shown.
     """
-    self: Monitor = ctx.obj
-    assert self._sout is not None
-    self._sout.write(monitor_cli.get_help(ctx))
-    self._sout.write("\n")
+    stdout = _get_current_stdout()
+    stdout.write(monitor_cli.get_help(ctx))
+    stdout.write("\n")
 
 
 @monitor_cli.command(name="signal")
@@ -311,7 +328,6 @@ def help(ctx, cmd_names: Sequence[str]) -> None:
 def signal_(ctx, signame: str) -> None:
     """Send a Unix signal"""
     self: Monitor = ctx.obj
-    assert self._sout is not None
     if hasattr(signal, signame):
         os.kill(os.getpid(), getattr(signal, signame))
         self._print_ok(f"Sent signal to {signame} PID {os.getpid()}")
@@ -323,11 +339,11 @@ def signal_(ctx, signame: str) -> None:
 def stacktrace(ctx) -> None:
     """Print a stack trace from the event loop thread"""
     self: Monitor = ctx.obj
-    assert self._sout is not None
+    stdout = _get_current_stdout()
     tid = self._event_loop_thread_id
     assert tid is not None
     frame = sys._current_frames()[tid]
-    traceback.print_stack(frame, file=self._sout)
+    traceback.print_stack(frame, file=stdout)
 
 
 @monitor_cli.command()
@@ -335,7 +351,6 @@ def stacktrace(ctx) -> None:
 def cancel(ctx, taskid: int) -> None:
     """Cancel an indicated task"""
     self: Monitor = ctx.obj
-    assert self._sout is not None
     task = task_by_id(taskid, self._monitored_loop)
     if task:
         fut = asyncio.run_coroutine_threadsafe(
@@ -350,21 +365,20 @@ def cancel(ctx, taskid: int) -> None:
 @monitor_cli.command(aliases=["q", "quit"])
 def exit(ctx) -> None:
     """Leave the monitor"""
-    self: Monitor = ctx.obj
-    assert self._sout is not None
-    self._sout.write("Leaving monitor. Hit Ctrl-C to exit\n")
-    self._sout.flush()
+    stdout = _get_current_stdout()
+    stdout.write("Leaving monitor. Hit Ctrl-C to exit\n")
+    stdout.flush()
 
 
 @monitor_cli.command()
 def console(ctx) -> None:
     """Switch to async Python REPL"""
     self: Monitor = ctx.obj
+    stdout = _get_current_stdout()
     if not self._console_enabled:
         self._print_error("Python console is disabled for this session!")
         return
     assert self._sin is not None
-    assert self._sout is not None
 
     h, p = self._host, self._console_port
     log.info("Starting console at %s:%d", h, p)
@@ -373,7 +387,7 @@ def console(ctx) -> None:
     )
     server = fut.result(timeout=3)
     try:
-        console_proxy(self._sin, self._sout, self._host, self._console_port)
+        console_proxy(self._sin, stdout, self._host, self._console_port)
     finally:
         coro = close_server(server)
         close_fut = asyncio.run_coroutine_threadsafe(coro, loop=self._monitored_loop)
@@ -392,8 +406,8 @@ def ps(ctx) -> None:
         "Since",
     )
     self: Monitor = ctx.obj
+    stdout = _get_current_stdout()
     table_data: List[Tuple[str, str, str, str, str, str]] = [headers]
-    assert self._sout is not None
 
     for task in sorted(all_tasks(loop=self._monitored_loop), key=id):
         taskid = str(id(task))
@@ -430,10 +444,10 @@ def ps(ctx) -> None:
     table = AsciiTable(table_data)
     table.inner_row_border = False
     table.inner_column_border = False
-    self._sout.write(f"{len(table_data)} tasks running\n")
-    self._sout.write(table.table)
-    self._sout.write("\n")
-    self._sout.flush()
+    stdout.write(f"{len(table_data)} tasks running\n")
+    stdout.write(table.table)
+    stdout.write("\n")
+    stdout.flush()
 
 
 @monitor_cli.command(aliases=["w"])
@@ -441,7 +455,7 @@ def ps(ctx) -> None:
 def where(ctx, taskid: int) -> None:
     """Show stack frames and its task creation chain of a task"""
     self: Monitor = ctx.obj
-    assert self._sout is not None
+    stdout = _get_current_stdout()
     depth = 0
     task = task_by_id(taskid, self._monitored_loop)
     if task is None:
@@ -454,34 +468,34 @@ def where(ctx, taskid: int) -> None:
     prev_task = None
     for task in reversed(task_chain):
         if depth == 0:
-            self._sout.write(
+            stdout.write(
                 "Stack of the root task or coroutine scheduled in the event loop (most recent call last):\n\n"
             )
         elif depth > 0:
             assert prev_task is not None
-            self._sout.write(
+            stdout.write(
                 "Stack of %s when creating the next task (most recent call last):\n\n"
                 % _format_task(prev_task)
             )
         stack = self._created_tracebacks.get(task)
         if stack is None:
-            self._sout.write(
+            stdout.write(
                 "  No stack available (maybe it is a native code or the event loop itself)\n"
             )
         else:
             stack = _filter_stack(stack)
-            self._sout.write("".join(traceback.format_list(stack)))
+            stdout.write("".join(traceback.format_list(stack)))
         prev_task = task
         depth += 1
-        self._sout.write("\n")
+        stdout.write("\n")
     task = task_chain[0]
-    self._sout.write("Stack of %s (most recent call last):\n\n" % _format_task(task))
+    stdout.write("Stack of %s (most recent call last):\n\n" % _format_task(task))
     stack = _extract_stack_from_task(task)
     if not stack:
-        self._sout.write("  No stack available for %s" % _format_task(task))
+        stdout.write("  No stack available for %s" % _format_task(task))
     else:
-        self._sout.write("".join(traceback.format_list(stack)))
-    self._sout.write("\n")
+        stdout.write("".join(traceback.format_list(stack)))
+    stdout.write("\n")
 
 
 def start_monitor(
