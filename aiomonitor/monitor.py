@@ -300,7 +300,6 @@ class Monitor:
                             standalone_mode=False,  # type: ignore
                             max_content_width=term_size.columns,
                         )
-                        click.echo("")
                         lastcmd = user_input
                     except (click.BadParameter, click.UsageError) as e:
                         self._print_error(str(e))
