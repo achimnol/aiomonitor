@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import shlex
@@ -15,7 +16,7 @@ from concurrent.futures import Future
 from contextvars import ContextVar, copy_context
 from datetime import timedelta
 from types import TracebackType
-from typing import Any, Final, List, Optional, Sequence, TextIO, Tuple, Type
+from typing import Any, Dict, Final, List, Optional, Sequence, TextIO, Tuple, Type
 
 import click
 from prompt_toolkit import PromptSession
@@ -24,7 +25,11 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.shortcuts import print_formatted_text
 from terminaltables import AsciiTable
 
-from .mypy_types import Loop, OptLocals
+from .console import (
+    close_server,
+    console_proxy,
+    init_console_server,
+)
 from .task import TracedTask
 from .utils import (
     AliasGroupMixin,
@@ -36,9 +41,6 @@ from .utils import (
     _format_timedelta,
     all_tasks,
     cancel_task,
-    close_server,
-    console_proxy,
-    init_console_server,
     task_by_id,
 )
 
@@ -46,14 +48,18 @@ __all__ = ("Monitor", "start_monitor")
 
 log = logging.getLogger(__name__)
 current_stdout: ContextVar[TextIO] = ContextVar("current_stdout")
+command_done: ContextVar[asyncio.Event] = ContextVar("command_done")
 
 MONITOR_HOST: Final = "127.0.0.1"
 MONITOR_PORT: Final = 50101
 CONSOLE_PORT: Final = 50102
 
 
-@click.group(cls=AliasGroupMixin)
+@click.group(cls=AliasGroupMixin, add_help_option=False)
 def monitor_cli():
+    """
+    To see the usage of each command, run them with "--help" option.
+    """
     pass
 
 
@@ -108,7 +114,7 @@ class Monitor:
         console_port: int = CONSOLE_PORT,
         console_enabled: bool = True,
         hook_task_factory: bool = False,
-        locals: OptLocals = None,
+        locals: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._monitored_loop = loop or asyncio.get_running_loop()
         self._host = host
@@ -141,7 +147,6 @@ class Monitor:
     def start(self) -> None:
         assert not self._closed
         assert not self._started
-
         self._started = True
         self._original_task_factory = self._monitored_loop.get_task_factory()
         if self._hook_task_factory:
@@ -245,6 +250,9 @@ class Monitor:
         s = "" if tasknum == 1 else "s"
         print(self.intro.format(tasknum=tasknum, s=s), file=connection.stdout)
         current_stdout_token = current_stdout.set(connection.stdout)
+        # NOTE: prompt_toolkit's all internal console output automatically uses
+        #       an internal contextvar to keep the stdout consistent with the
+        #       current telnet connection.
         prompt_session: PromptSession[str] = PromptSession()
         lastcmd = "noop"
         style_prompt = "#5fd7ff bold"
@@ -265,6 +273,8 @@ class Monitor:
                 except Exception:
                     self._print_error(traceback.format_exc())
                 else:
+                    command_done_event = asyncio.Event()
+                    command_done_token = command_done.set(command_done_event)
                     try:
                         if not user_input and lastcmd is not None:
                             user_input = lastcmd
@@ -279,6 +289,7 @@ class Monitor:
                             standalone_mode=False,  # type: ignore
                             max_content_width=term_size.columns,
                         )
+                        await command_done_event.wait()
                         lastcmd = user_input
                     except (click.BadParameter, click.UsageError) as e:
                         self._print_error(str(e))
@@ -286,23 +297,60 @@ class Monitor:
                         return
                     except Exception:
                         self._print_error(traceback.format_exc())
+                    finally:
+                        command_done.reset(command_done_token)
         finally:
             current_stdout.reset(current_stdout_token)
 
 
+def auto_command_done(cmdfunc):
+    @functools.wraps(cmdfunc)
+    def _inner(ctx: click.Context, *args, **kwargs):
+        command_done_event = command_done.get()
+        try:
+            return cmdfunc(ctx, *args, **kwargs)
+        finally:
+            command_done_event.set()
+
+    return _inner
+
+
+def custom_help_option(cmdfunc):
+    """
+    A custom help option to ensure setting `command_done_event`.
+    """
+
+    def show_help(ctx: click.Context, param: click.Parameter, value: bool) -> None:
+        command_done_event = command_done.get()
+        try:
+            if not value:
+                return
+            click.echo(ctx.get_help(), color=ctx.color)
+            ctx.exit()
+        finally:
+            command_done_event.set()
+
+    return click.option(
+        "--help",
+        is_flag=True,
+        expose_value=False,
+        is_eager=True,
+        callback=show_help,
+        help="Show the help message",
+    )(cmdfunc)
+
+
 @monitor_cli.command(hidden=True)
+@auto_command_done
 def noop(ctx: click.Context) -> None:
     pass
 
 
 @monitor_cli.command(aliases=["?", "h"])
-@click.argument("cmd_names", type=str, nargs=-1)
-def help(ctx: click.Context, cmd_names: Sequence[str]) -> None:
-    """Show help for command name
-
-    Any number of command names may be given to help, and the long help
-    text for all of them will be shown.
-    """
+@custom_help_option
+@auto_command_done
+def help(ctx: click.Context) -> None:
+    """Show the list of commands"""
     stdout = _get_current_stdout()
     stdout.write(monitor_cli.get_help(ctx))
     stdout.write("\n")
@@ -310,6 +358,8 @@ def help(ctx: click.Context, cmd_names: Sequence[str]) -> None:
 
 @monitor_cli.command(name="signal")
 @click.argument("signame", type=str)
+@custom_help_option
+@auto_command_done
 def signal_(ctx: click.Context, signame: str) -> None:
     """Send a Unix signal"""
     self: Monitor = ctx.obj
@@ -321,6 +371,8 @@ def signal_(ctx: click.Context, signame: str) -> None:
 
 
 @monitor_cli.command(aliases=["st"])
+@custom_help_option
+@auto_command_done
 def stacktrace(ctx: click.Context) -> None:
     """Print a stack trace from the event loop thread"""
     self: Monitor = ctx.obj
@@ -333,6 +385,8 @@ def stacktrace(ctx: click.Context) -> None:
 
 @monitor_cli.command()
 @click.argument("taskid", type=int)
+@custom_help_option
+@auto_command_done
 def cancel(ctx: click.Context, taskid: int) -> None:
     """Cancel an indicated task"""
     self: Monitor = ctx.obj
@@ -348,36 +402,50 @@ def cancel(ctx: click.Context, taskid: int) -> None:
 
 
 @monitor_cli.command(aliases=["q", "quit"])
+@custom_help_option
+@auto_command_done
 def exit(ctx: click.Context) -> None:
     """Leave the monitor client session"""
     raise asyncio.CancelledError("exit by user")
 
 
 @monitor_cli.command()
+@custom_help_option
 def console(ctx: click.Context) -> None:
     """Switch to async Python REPL"""
     self: Monitor = ctx.obj
+    command_done_event = command_done.get()
     stdout = _get_current_stdout()
     if not self._console_enabled:
         self._print_error("Python console is disabled for this session!")
         return
-    assert self._sin is not None
 
-    h, p = self._host, self._console_port
-    log.info("Starting console at %s:%d", h, p)
-    fut = init_console_server(
-        self._host, self._console_port, self._locals, self._monitored_loop
-    )
-    server = fut.result(timeout=3)
-    try:
-        console_proxy(self._sin, stdout, self._host, self._console_port)
-    finally:
-        coro = close_server(server)
-        close_fut = asyncio.run_coroutine_threadsafe(coro, loop=self._monitored_loop)
-        close_fut.result(timeout=15)
+    async def _console():
+        h, p = self._host, self._console_port
+        log.info("Starting console at %s:%d", h, p)
+        try:
+            server = await init_console_server(
+                self._host,
+                self._console_port,
+                self._locals,
+                self._monitored_loop,
+            )
+            try:
+                await console_proxy(stdout, stdout, self._host, self._console_port)
+            finally:
+                await close_server(server, self._monitored_loop)
+        finally:
+            command_done_event.set()
+
+    # Since we are already inside the UI's event loop,
+    # spawn the async command function as a new task and let it
+    # set `command_done_event` internally.
+    asyncio.create_task(_console())
 
 
 @monitor_cli.command(aliases=["p"])
+@custom_help_option
+@auto_command_done
 def ps(ctx: click.Context) -> None:
     """Show task table"""
     headers = (
@@ -435,6 +503,8 @@ def ps(ctx: click.Context) -> None:
 
 @monitor_cli.command(aliases=["w"])
 @click.argument("taskid", type=int)
+@custom_help_option
+@auto_command_done
 def where(ctx: click.Context, taskid: int) -> None:
     """Show stack frames and its task creation chain of a task"""
     self: Monitor = ctx.obj
@@ -482,7 +552,7 @@ def where(ctx: click.Context, taskid: int) -> None:
 
 
 def start_monitor(
-    loop: Loop,
+    loop: asyncio.AbstractEventLoop,
     *,
     monitor: Type[Monitor] = Monitor,
     host: str = MONITOR_HOST,
@@ -490,7 +560,7 @@ def start_monitor(
     console_port: int = CONSOLE_PORT,
     console_enabled: bool = True,
     hook_task_factory: bool = False,
-    locals: OptLocals = None,
+    locals: Optional[Dict[str, Any]] = None,
 ) -> Monitor:
     m = monitor(
         loop,

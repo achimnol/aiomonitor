@@ -8,7 +8,7 @@ import struct
 import sys
 import telnetlib
 import termios
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, TextIO, Tuple
 
 ModeDef = collections.namedtuple(
     "ModeDef", ["iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed", "cc"]
@@ -22,12 +22,18 @@ class TelnetClient:
     (https://github.com/jquast/telnetlib3)
     """
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        stdin: Optional[TextIO] = None,
+        stdout: Optional[TextIO] = None,
+    ) -> None:
         self._host = host
         self._port = port
         self._term = os.environ.get("TERM", "unknown")
-        self._stdin = sys.stdin
-        self._stdout = sys.stdout
+        self._stdin = stdin or sys.stdin
+        self._stdout = stdout or sys.stdout
         self._isatty = os.path.sameopenfile(self._stdin.fileno(), self._stdout.fileno())
         self._remote_options: Dict[bytes, bool] = collections.defaultdict(lambda: False)
 
