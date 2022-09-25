@@ -102,13 +102,15 @@ async def start(
                 locals=locals, streams=streams, loop=monitor_loop
             )
 
-        server = await aioconsole.start_interactive_server(
-            host=host,
-            port=port,
-            factory=_factory,
-            loop=monitor_loop,
-        )
-        ui_loop.call_soon_threadsafe(done.set)
+        try:
+            server = await aioconsole.start_interactive_server(
+                host=host,
+                port=port,
+                factory=_factory,
+                loop=monitor_loop,
+            )
+        finally:
+            ui_loop.call_soon_threadsafe(done.set)
         return server
 
     console_future = asyncio.run_coroutine_threadsafe(
@@ -130,12 +132,13 @@ async def close(
     done = asyncio.Event()
 
     async def _close(done: asyncio.Event) -> None:
-        server.close()
         try:
+            server.close()
             await server.wait_closed()
         except NotImplementedError:
             pass
-        ui_loop.call_soon_threadsafe(done.set)
+        finally:
+            ui_loop.call_soon_threadsafe(done.set)
 
     close_future = asyncio.run_coroutine_threadsafe(
         _close(done),
