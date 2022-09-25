@@ -202,7 +202,9 @@ class AliasGroupMixin(click.Group):
                     formatter.write_dl(rows)
 
 
-def task_by_id(taskid: int, loop: asyncio.AbstractEventLoop) -> Optional[asyncio.Task[Any]]:
+def task_by_id(
+    taskid: int, loop: asyncio.AbstractEventLoop
+) -> Optional[asyncio.Task[Any]]:
     tasks = all_tasks(loop=loop)
     return next(filter(lambda t: id(t) == taskid, tasks), None)
 
@@ -215,7 +217,7 @@ async def cancel_task(task: asyncio.Task[Any]) -> None:
 
 def all_tasks(loop: Loop) -> Set[asyncio.Task[Any]]:
     if sys.version_info >= (3, 7):
-        tasks = asyncio.all_tasks(loop=loop)  # type:
+        tasks = asyncio.all_tasks(loop=loop)
     else:
         tasks = asyncio.Task.all_tasks(loop=loop)
     return tasks

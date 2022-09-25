@@ -86,7 +86,7 @@ class Monitor:
         "    {cmd_name}{cmd_arg_sep}{arg_list}: {doc_firstline}"  # noqa
     )
 
-    _console_tasks: weakref.WeakSet[asyncio.Task]
+    _console_tasks: weakref.WeakSet[asyncio.Task[Any]]
 
     _created_traceback_chains: weakref.WeakKeyDictionary[
         asyncio.Task[Any],
@@ -161,7 +161,7 @@ class Monitor:
     def closed(self) -> bool:
         return self._closed
 
-    def __enter__(self) -> "Monitor":
+    def __enter__(self) -> Monitor:
         if not self._started:
             self.start()
         return self
