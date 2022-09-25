@@ -12,24 +12,20 @@ import time
 import traceback
 import weakref
 from asyncio.coroutines import _format_coroutine  # type: ignore
-from concurrent.futures import Future
 from contextvars import ContextVar, copy_context
 from datetime import timedelta
 from types import TracebackType
-from typing import Any, Dict, Final, List, Optional, Sequence, TextIO, Tuple, Type
+from typing import Any, Dict, Final, List, Optional, TextIO, Tuple, Type
 
 import click
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application.current import get_app_session
 from prompt_toolkit.contrib.telnet.server import TelnetConnection, TelnetServer
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.shortcuts import print_formatted_text
 from terminaltables import AsciiTable
 
-from .console import (
-    close_server,
-    console_proxy,
-    init_console_server,
-)
+from . import console
 from .task import TracedTask
 from .utils import (
     AliasGroupMixin,
@@ -90,6 +86,8 @@ class Monitor:
         "    {cmd_name}{cmd_arg_sep}{arg_list}: {doc_firstline}"  # noqa
     )
 
+    _console_tasks: weakref.WeakSet[asyncio.Task]
+
     _created_traceback_chains: weakref.WeakKeyDictionary[
         asyncio.Task[Any],
         asyncio.Task[Any],
@@ -130,7 +128,7 @@ class Monitor:
         self._ui_thread = threading.Thread(target=self._server, args=(), daemon=True)
         self._closed = False
         self._started = False
-        self._console_future = None  # type: Optional[Future[Any]]
+        self._console_tasks = weakref.WeakSet()
 
         self._hook_task_factory = hook_task_factory
         self._created_traceback_chains = weakref.WeakKeyDictionary()
@@ -219,6 +217,12 @@ class Monitor:
         except asyncio.CancelledError:
             pass
         finally:
+            console_tasks = {*self._console_tasks}
+            for console_task in console_tasks:
+                console_task.cancel()
+            await asyncio.gather(*console_tasks, return_exceptions=True)
+            del console_tasks
+            await asyncio.sleep(0.1)
             await telnet_server.stop()
 
     def _print_ok(self, msg: str) -> None:
@@ -268,7 +272,9 @@ class Monitor:
                             )
                         )
                     ).strip()
-                except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
+                except KeyboardInterrupt:
+                    self._print_error("To terminate, press Ctrl+D or type 'exit'.")
+                except (EOFError, asyncio.CancelledError):
                     return
                 except Exception:
                     self._print_error(traceback.format_exc())
@@ -290,7 +296,10 @@ class Monitor:
                             max_content_width=term_size.columns,
                         )
                         await command_done_event.wait()
-                        lastcmd = user_input
+                        if args[0] == "console":
+                            lastcmd = "noop"
+                        else:
+                            lastcmd = user_input
                     except (click.BadParameter, click.UsageError) as e:
                         self._print_error(str(e))
                     except asyncio.CancelledError:
@@ -315,20 +324,29 @@ def auto_command_done(cmdfunc):
     return _inner
 
 
+def auto_async_command_done(cmdfunc):
+    @functools.wraps(cmdfunc)
+    async def _inner(ctx: click.Context, *args, **kwargs):
+        command_done_event = command_done.get()
+        try:
+            return await cmdfunc(ctx, *args, **kwargs)
+        finally:
+            command_done_event.set()
+
+    return _inner
+
+
 def custom_help_option(cmdfunc):
     """
     A custom help option to ensure setting `command_done_event`.
     """
 
+    @auto_command_done
     def show_help(ctx: click.Context, param: click.Parameter, value: bool) -> None:
-        command_done_event = command_done.get()
-        try:
-            if not value:
-                return
-            click.echo(ctx.get_help(), color=ctx.color)
-            ctx.exit()
-        finally:
-            command_done_event.set()
+        if not value:
+            return
+        click.echo(ctx.get_help(), color=ctx.color)
+        ctx.exit()
 
     return click.option(
         "--help",
@@ -340,27 +358,25 @@ def custom_help_option(cmdfunc):
     )(cmdfunc)
 
 
-@monitor_cli.command(hidden=True)
+@monitor_cli.command(name="noop", hidden=True)
 @auto_command_done
-def noop(ctx: click.Context) -> None:
+def do_noop(ctx: click.Context) -> None:
     pass
 
 
-@monitor_cli.command(aliases=["?", "h"])
+@monitor_cli.command(name="help", aliases=["?", "h"])
 @custom_help_option
 @auto_command_done
-def help(ctx: click.Context) -> None:
+def do_help(ctx: click.Context) -> None:
     """Show the list of commands"""
-    stdout = _get_current_stdout()
-    stdout.write(monitor_cli.get_help(ctx))
-    stdout.write("\n")
+    click.echo(monitor_cli.get_help(ctx))
 
 
 @monitor_cli.command(name="signal")
 @click.argument("signame", type=str)
 @custom_help_option
 @auto_command_done
-def signal_(ctx: click.Context, signame: str) -> None:
+def do_signal(ctx: click.Context, signame: str) -> None:
     """Send a Unix signal"""
     self: Monitor = ctx.obj
     if hasattr(signal, signame):
@@ -370,10 +386,10 @@ def signal_(ctx: click.Context, signame: str) -> None:
         self._print_error(f"Unknown signal {signame}")
 
 
-@monitor_cli.command(aliases=["st"])
+@monitor_cli.command(name="stacktrace", aliases=["st", "stack"])
 @custom_help_option
 @auto_command_done
-def stacktrace(ctx: click.Context) -> None:
+def do_stacktrace(ctx: click.Context) -> None:
     """Print a stack trace from the event loop thread"""
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
@@ -383,11 +399,11 @@ def stacktrace(ctx: click.Context) -> None:
     traceback.print_stack(frame, file=stdout)
 
 
-@monitor_cli.command()
+@monitor_cli.command(name="cancel")
 @click.argument("taskid", type=int)
 @custom_help_option
 @auto_command_done
-def cancel(ctx: click.Context, taskid: int) -> None:
+def do_cancel(ctx: click.Context, taskid: int) -> None:
     """Cancel an indicated task"""
     self: Monitor = ctx.obj
     task = task_by_id(taskid, self._monitored_loop)
@@ -401,52 +417,59 @@ def cancel(ctx: click.Context, taskid: int) -> None:
         self._print_error(f"No task {taskid}")
 
 
-@monitor_cli.command(aliases=["q", "quit"])
+@monitor_cli.command(name="exit", aliases=["q", "quit"])
 @custom_help_option
 @auto_command_done
-def exit(ctx: click.Context) -> None:
+def do_exit(ctx: click.Context) -> None:
     """Leave the monitor client session"""
     raise asyncio.CancelledError("exit by user")
 
 
-@monitor_cli.command()
+@monitor_cli.command(name="console")
 @custom_help_option
-def console(ctx: click.Context) -> None:
+def do_console(ctx: click.Context) -> None:
     """Switch to async Python REPL"""
     self: Monitor = ctx.obj
-    command_done_event = command_done.get()
-    stdout = _get_current_stdout()
     if not self._console_enabled:
         self._print_error("Python console is disabled for this session!")
         return
 
-    async def _console():
+    @auto_async_command_done
+    async def _console(ctx: click.Context) -> None:
         h, p = self._host, self._console_port
-        log.info("Starting console at %s:%d", h, p)
+        log.info("Starting aioconsole at %s:%d", h, p)
+        app_session = get_app_session()
+        server = await console.start(
+            self._host,
+            self._console_port,
+            self._locals,
+            self._monitored_loop,
+        )
         try:
-            server = await init_console_server(
+            await console.proxy(
+                app_session.input,
+                app_session.output,
                 self._host,
                 self._console_port,
-                self._locals,
-                self._monitored_loop,
             )
-            try:
-                await console_proxy(stdout, stdout, self._host, self._console_port)
-            finally:
-                await close_server(server, self._monitored_loop)
+        except asyncio.CancelledError:
+            return
         finally:
-            command_done_event.set()
+            await console.close(server, self._monitored_loop)
+            log.info("Terminated aioconsole at %s:%d", h, p)
+            self._print_ok("The console session is closed.")
 
     # Since we are already inside the UI's event loop,
     # spawn the async command function as a new task and let it
     # set `command_done_event` internally.
-    asyncio.create_task(_console())
+    task = asyncio.create_task(_console(ctx))
+    self._console_tasks.add(task)
 
 
-@monitor_cli.command(aliases=["p"])
+@monitor_cli.command(name="ps", aliases=["p"])
 @custom_help_option
 @auto_command_done
-def ps(ctx: click.Context) -> None:
+def do_ps(ctx: click.Context) -> None:
     """Show task table"""
     headers = (
         "Task ID",
@@ -501,11 +524,11 @@ def ps(ctx: click.Context) -> None:
     stdout.flush()
 
 
-@monitor_cli.command(aliases=["w"])
+@monitor_cli.command(name="where", aliases=["w"])
 @click.argument("taskid", type=int)
 @custom_help_option
 @auto_command_done
-def where(ctx: click.Context, taskid: int) -> None:
+def do_where(ctx: click.Context, taskid: int) -> None:
     """Show stack frames and its task creation chain of a task"""
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()

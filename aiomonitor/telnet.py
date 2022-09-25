@@ -104,8 +104,8 @@ class TelnetClient:
         )
         self._closed = asyncio.Event()
         self._stdin_reader, self._stdout_writer = await self._create_stdio_streams()
-        self._read_task = asyncio.create_task(self._read())
-        self._input_task = asyncio.create_task(self._input())
+        self._recv_task = asyncio.create_task(self._handle_received())
+        self._input_task = asyncio.create_task(self._handle_user_input())
         await asyncio.sleep(0.3)  # wait for negotiation to complete
         self._saved_mode = self.get_mode()
         if self._isatty:
@@ -123,7 +123,7 @@ class TelnetClient:
             except NotImplementedError:
                 pass
             self._conn_reader.feed_eof()
-            await self._read_task
+            await self._recv_task
             self._stdout_writer.close()
             try:
                 await self._stdout_writer.wait_closed()
@@ -136,12 +136,11 @@ class TelnetClient:
     async def interact(self) -> None:
         try:
             await self._closed.wait()
-        except KeyboardInterrupt:
-            self._conn_writer.write_eof()
+        finally:
             self._closed.set()
-            raise
+            self._conn_writer.write_eof()
 
-    async def _input(self) -> None:
+    async def _handle_user_input(self) -> None:
         try:
             while True:
                 buf = await self._stdin_reader.read(128)
@@ -180,7 +179,7 @@ class TelnetClient:
     async def _handle_sb(self, option: bytes, chunk: bytes) -> None:
         pass
 
-    async def _read(self):
+    async def _handle_received(self):
         buf = b""
         try:
             while not self._conn_reader.at_eof():
