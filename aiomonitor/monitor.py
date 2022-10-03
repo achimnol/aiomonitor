@@ -125,7 +125,17 @@ def complete_task_id(
         task_id
         for task_id in map(str, sorted(map(id, all_tasks(loop=self._monitored_loop))))
         if task_id.startswith(incomplete)
-    ][:10]
+    ][
+        :10
+    ]  # prevent flooding the terminal...
+
+
+def complete_signal_names(
+    ctx: click.Context,
+    param: click.Parameter,
+    incomplete: str,
+) -> Iterable[str]:
+    return [sig.name for sig in signal.Signals if sig.name.startswith(incomplete)]
 
 
 class Monitor:
@@ -440,7 +450,7 @@ def do_help(ctx: click.Context) -> None:
 
 
 @monitor_cli.command(name="signal")
-@click.argument("signame", type=str)
+@click.argument("signame", type=str, shell_complete=complete_signal_names)
 @custom_help_option
 @auto_command_done
 def do_signal(ctx: click.Context, signame: str) -> None:
@@ -467,21 +477,22 @@ def do_stacktrace(ctx: click.Context) -> None:
 
 
 @monitor_cli.command(name="cancel")
-@click.argument("taskid", type=int)
+@click.argument("taskid", shell_complete=complete_task_id)
 @custom_help_option
 @auto_command_done
-def do_cancel(ctx: click.Context, taskid: int) -> None:
+def do_cancel(ctx: click.Context, taskid: str) -> None:
     """Cancel an indicated task"""
     self: Monitor = ctx.obj
-    task = task_by_id(taskid, self._monitored_loop)
+    task_id = int(taskid)
+    task = task_by_id(task_id, self._monitored_loop)
     if task:
         fut = asyncio.run_coroutine_threadsafe(
             cancel_task(task), loop=self._monitored_loop
         )
         fut.result(timeout=3)
-        self.print_ok(f"Cancelled task {taskid}")
+        self.print_ok(f"Cancelled task {task_id}")
     else:
-        self.print_fail(f"No task {taskid}")
+        self.print_fail(f"No task {task_id}")
 
 
 @monitor_cli.command(name="exit", aliases=["q", "quit"])
