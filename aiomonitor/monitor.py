@@ -30,7 +30,7 @@ from prompt_toolkit.shortcuts import print_formatted_text
 from terminaltables import AsciiTable
 
 from . import console
-from .task import TracedTask
+from .task import CancelledTaskInfo, TracedTask
 from .utils import (
     AliasGroupMixin,
     _extract_stack_from_frame,
@@ -159,13 +159,8 @@ class Monitor:
     _created_tracebacks: weakref.WeakKeyDictionary[
         asyncio.Task[Any], List[traceback.FrameSummary]
     ]
-    _cancelled_traceback_chains: weakref.WeakKeyDictionary[
-        asyncio.Task[Any],
-        asyncio.Task[Any],
-    ]
-    _cancelled_tracebacks: weakref.WeakKeyDictionary[
-        asyncio.Task[Any], List[traceback.FrameSummary]
-    ]
+    _cancelled_task_chains: Dict[int, int]
+    _cancelled_tasks: Dict[int, CancelledTaskInfo]
 
     def __init__(
         self,
@@ -200,8 +195,8 @@ class Monitor:
         self._hook_task_factory = hook_task_factory
         self._created_traceback_chains = weakref.WeakKeyDictionary()
         self._created_tracebacks = weakref.WeakKeyDictionary()
-        self._cancelled_traceback_chains = weakref.WeakKeyDictionary()
-        self._cancelled_tracebacks = weakref.WeakKeyDictionary()
+        self._cancelled_task_chains = {}
+        self._cancelled_tasks = {}
 
     @property
     def host(self) -> str:
@@ -268,7 +263,12 @@ class Monitor:
             parent_task = asyncio.current_task()
         except RuntimeError:
             parent_task = None
-        task = TracedTask(coro, loop=self._monitored_loop)
+        task = TracedTask(
+            coro,
+            cancelled_tasks=self._cancelled_tasks,
+            cancelled_task_chains=self._cancelled_task_chains,
+            loop=self._monitored_loop,
+        )
         self._created_tracebacks[task] = _extract_stack_from_frame(sys._getframe())[
             :-1
         ]  # strip this wrapper method
@@ -579,7 +579,7 @@ def do_ps(ctx: click.Context) -> None:
             if isinstance(task, TracedTask):
                 running_since = _format_timedelta(
                     timedelta(
-                        seconds=(time.monotonic() - task._started_at),
+                        seconds=(time.perf_counter() - task._started_at),
                     )
                 )
             else:
@@ -597,7 +597,52 @@ def do_ps(ctx: click.Context) -> None:
     table = AsciiTable(table_data)
     table.inner_row_border = False
     table.inner_column_border = False
-    stdout.write(f"{len(table_data)} tasks running\n")
+    stdout.write(f"{len(table_data) - 1} tasks running\n")
+    stdout.write(table.table)
+    stdout.write("\n")
+    stdout.flush()
+
+
+@monitor_cli.command(name="ls-cancelled")
+@custom_help_option
+@auto_command_done
+def do_ls_cancelled(ctx: click.Context) -> None:
+    """List recently cancelled tasks"""
+    headers = (
+        "Trace ID",
+        "Name",
+        "Coro",
+        "Started At",
+        "Terminated At",
+    )
+    self: Monitor = ctx.obj
+    stdout = _get_current_stdout()
+    table_data: List[Tuple[str, str, str, str, str]] = [headers]
+    for item in sorted(
+        self._cancelled_tasks.values(),
+        key=lambda info: info.cancelled_at,
+        reverse=True,
+    ):
+        run_since = _format_timedelta(
+            timedelta(seconds=time.perf_counter() - item.started_at)
+        )
+        cancelled_since = _format_timedelta(
+            timedelta(seconds=time.perf_counter() - item.cancelled_at)
+        )
+        print(item)
+        table_data.append(
+            (
+                str(item.id),
+                item.name,
+                item.coro,
+                run_since,
+                cancelled_since,
+            )
+        )
+    table = AsciiTable(table_data)
+    table.inner_row_border = False
+    table.inner_column_border = False
+    stdout.write(f"{len(table_data) - 1} tasks cancelled (old ones may be stripped)\n")
     stdout.write(table.table)
     stdout.write("\n")
     stdout.flush()
