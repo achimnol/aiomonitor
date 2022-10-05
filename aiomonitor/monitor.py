@@ -18,6 +18,7 @@ from types import TracebackType
 from typing import Any, Dict, Final, Iterable, List, Optional, TextIO, Tuple, Type
 
 import click
+import janus
 from click.parser import split_arg_string
 from click.shell_completion import CompletionItem, _resolve_context, _resolve_incomplete
 from prompt_toolkit import PromptSession
@@ -30,7 +31,7 @@ from prompt_toolkit.shortcuts import print_formatted_text
 from terminaltables import AsciiTable
 
 from . import console
-from .task import CancelledTaskInfo, TracedTask
+from .task import CancellationChain, TerminatedTaskInfo, TracedTask
 from .utils import (
     AliasGroupMixin,
     _extract_stack_from_frame,
@@ -159,8 +160,10 @@ class Monitor:
     _created_tracebacks: weakref.WeakKeyDictionary[
         asyncio.Task[Any], List[traceback.FrameSummary]
     ]
-    _cancelled_task_chains: Dict[int, int]
-    _cancelled_tasks: Dict[int, CancelledTaskInfo]
+    _terminated_tasks: Dict[int, TerminatedTaskInfo]
+    _termination_info_queue: janus.Queue[TerminatedTaskInfo]
+    _canceller_chain: Dict[int, int]
+    _cancellation_chain_queue: janus.Queue[CancellationChain]
 
     def __init__(
         self,
@@ -187,7 +190,7 @@ class Monitor:
 
         log.info("Starting aiomonitor at %s:%d", host, port)
 
-        self._ui_thread = threading.Thread(target=self._server, args=(), daemon=True)
+        self._ui_thread = threading.Thread(target=self._ui_main, args=(), daemon=True)
         self._closed = False
         self._started = False
         self._console_tasks = weakref.WeakSet()
@@ -195,8 +198,8 @@ class Monitor:
         self._hook_task_factory = hook_task_factory
         self._created_traceback_chains = weakref.WeakKeyDictionary()
         self._created_tracebacks = weakref.WeakKeyDictionary()
-        self._cancelled_task_chains = {}
-        self._cancelled_tasks = {}
+        self._terminated_tasks = {}
+        self._canceller_chain = {}
 
     @property
     def host(self) -> str:
@@ -250,12 +253,25 @@ class Monitor:
     def close(self) -> None:
         assert self._started, "The monitor must have been started to close it."
         if not self._closed:
-            self._telnet_server_loop.call_soon_threadsafe(
-                self._telnet_server_future.cancel,
+            self._ui_loop.call_soon_threadsafe(
+                self._ui_forever_future.cancel,
             )
             self._ui_thread.join()
             self._monitored_loop.set_task_factory(self._original_task_factory)
             self._closed = True
+
+    async def _coro_wrapper(self, coro) -> Any:
+        myself = asyncio.current_task()
+        assert myself is not None
+        myself._orig_coro = coro
+        assert isinstance(myself, TracedTask)
+        try:
+            return await coro
+        except (asyncio.CancelledError, Exception):
+            myself._termination_stack = _extract_stack_from_frame(sys._getframe())[:-1]
+            raise
+        except BaseException:
+            raise
 
     def _create_task(self, loop, coro) -> asyncio.Task:
         assert loop is self._monitored_loop
@@ -264,9 +280,10 @@ class Monitor:
         except RuntimeError:
             parent_task = None
         task = TracedTask(
-            coro,
-            cancelled_tasks=self._cancelled_tasks,
-            cancelled_task_chains=self._cancelled_task_chains,
+            # functools.wraps(coro)(self._coro_wrapper(coro)),
+            self._coro_wrapper(coro),
+            termination_info_queue=self._termination_info_queue.sync_q,
+            cancellation_chain_queue=self._cancellation_chain_queue.sync_q,
             loop=self._monitored_loop,
         )
         self._created_tracebacks[task] = _extract_stack_from_frame(sys._getframe())[
@@ -276,19 +293,27 @@ class Monitor:
             self._created_traceback_chains[task] = parent_task
         return task
 
-    def _server(self) -> None:
-        asyncio.run(self._server_async())
+    def _ui_main(self) -> None:
+        asyncio.run(self._ui_main_async())
 
-    async def _server_async(self) -> None:
+    async def _ui_main_async(self) -> None:
         loop = asyncio.get_running_loop()
-        self._telnet_server_loop = loop
-        self._telnet_server_future = loop.create_future()
+        self._termination_info_queue = janus.Queue()
+        self._cancellation_chain_queue = janus.Queue()
+        self._ui_loop = loop
+        self._ui_forever_future = loop.create_future()
+        self._ui_termination_handler_task = asyncio.create_task(
+            self._ui_handle_termination_updates()
+        )
+        self._ui_cancellation_handler_task = asyncio.create_task(
+            self._ui_handle_cancellation_updates()
+        )
         telnet_server = TelnetServer(
             interact=self._interact, host=self._host, port=self._port
         )
         telnet_server.start()
         try:
-            await self._telnet_server_future
+            await self._ui_forever_future
         except asyncio.CancelledError:
             pass
         finally:
@@ -296,7 +321,33 @@ class Monitor:
             for console_task in console_tasks:
                 console_task.cancel()
             await asyncio.gather(*console_tasks, return_exceptions=True)
+            self._ui_termination_handler_task.cancel()
+            self._ui_cancellation_handler_task.cancel()
+            await self._ui_termination_handler_task
+            await self._ui_cancellation_handler_task
             await telnet_server.stop()
+
+    async def _ui_handle_termination_updates(self) -> None:
+        # TODO: trim the old historical entries to prevent memory leak
+        while True:
+            try:
+                update: TerminatedTaskInfo = (
+                    await self._termination_info_queue.async_q.get()
+                )
+            except asyncio.CancelledError:
+                return
+            self._terminated_tasks[update.id] = update
+
+    async def _ui_handle_cancellation_updates(self) -> None:
+        # TODO: trim the old historical entries to prevent memory leak
+        while True:
+            try:
+                update: CancellationChain = (
+                    await self._cancellation_chain_queue.async_q.get()
+                )
+            except asyncio.CancelledError:
+                return
+            self._canceller_chain[update.target_id] = update.canceller_id
 
     def print_ok(self, msg: str) -> None:
         print_formatted_text(
@@ -565,7 +616,10 @@ def do_ps(ctx: click.Context) -> None:
     for task in sorted(all_tasks(loop=self._monitored_loop), key=id):
         taskid = str(id(task))
         if task:
-            coro = _format_coroutine(task.get_coro()).partition(" ")[0]
+            if isinstance(task, TracedTask):
+                coro_repr = _format_coroutine(task._orig_coro).partition(" ")[0]
+            else:
+                coro_repr = _format_coroutine(task.get_coro()).partition(" ")[0]
             creation_stack = self._created_tracebacks.get(task)
             # Some values are masked as "-" when they are unavailable
             # if it's the root task/coro or if the task factory is not applied.
@@ -589,7 +643,7 @@ def do_ps(ctx: click.Context) -> None:
                     taskid,
                     task._state,
                     task.get_name(),
-                    coro,
+                    coro_repr,
                     created_location,
                     running_since,
                 )
@@ -619,15 +673,15 @@ def do_ls_cancelled(ctx: click.Context) -> None:
     stdout = _get_current_stdout()
     table_data: List[Tuple[str, str, str, str, str]] = [headers]
     for item in sorted(
-        self._cancelled_tasks.values(),
-        key=lambda info: info.cancelled_at,
+        self._terminated_tasks.values(),
+        key=lambda info: info.terminated_at,
         reverse=True,
     ):
         run_since = _format_timedelta(
             timedelta(seconds=time.perf_counter() - item.started_at)
         )
         cancelled_since = _format_timedelta(
-            timedelta(seconds=time.perf_counter() - item.cancelled_at)
+            timedelta(seconds=time.perf_counter() - item.terminated_at)
         )
         print(item)
         table_data.append(
