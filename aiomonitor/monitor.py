@@ -263,8 +263,8 @@ class Monitor:
     async def _coro_wrapper(self, coro) -> Any:
         myself = asyncio.current_task()
         assert myself is not None
-        myself._orig_coro = coro
         assert isinstance(myself, TracedTask)
+        myself._orig_coro = coro
         try:
             return await coro
         except (asyncio.CancelledError, Exception):
@@ -660,14 +660,14 @@ def do_ps(ctx: click.Context) -> None:
 @monitor_cli.command(name="ls-cancelled")
 @custom_help_option
 @auto_command_done
-def do_ls_cancelled(ctx: click.Context) -> None:
-    """List recently cancelled tasks"""
+def do_ls_terminated(ctx: click.Context) -> None:
+    """List recently terminated/cancelled tasks"""
     headers = (
         "Trace ID",
         "Name",
         "Coro",
-        "Started At",
-        "Terminated At",
+        "Since Started",
+        "Since Terminated",
     )
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
@@ -683,7 +683,6 @@ def do_ls_cancelled(ctx: click.Context) -> None:
         cancelled_since = _format_timedelta(
             timedelta(seconds=time.perf_counter() - item.terminated_at)
         )
-        print(item)
         table_data.append(
             (
                 str(item.id),

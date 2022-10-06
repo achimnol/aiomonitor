@@ -3,6 +3,7 @@ import dataclasses
 import sys
 import time
 import traceback
+from collections.abc import Coroutine
 from asyncio.coroutines import _format_coroutine  # type: ignore
 from typing import Any, List, Optional
 
@@ -32,6 +33,7 @@ class CancellationChain:
 
 
 class TracedTask(asyncio.Task):
+    _orig_coro: Coroutine
     _termination_stack: Optional[List[traceback.FrameSummary]]
 
     def __init__(
