@@ -1,5 +1,6 @@
 import asyncio
-import dataclasses
+import base64
+import struct
 import sys
 import time
 import traceback
@@ -10,26 +11,7 @@ from typing import Any, List, Optional
 import janus
 
 from .utils import _extract_stack_from_frame
-
-
-@dataclasses.dataclass
-class TerminatedTaskInfo:
-    id: int
-    name: str
-    coro: str
-    started_at: float
-    terminated_at: float
-    cancelled: bool
-    termination_stack: Optional[List[traceback.FrameSummary]]
-    canceller_stack: Optional[List[traceback.FrameSummary]] = None
-    exc_repr: Optional[str] = None
-
-
-@dataclasses.dataclass
-class CancellationChain:
-    target_id: int
-    canceller_id: int
-    canceller_stack: Optional[List[traceback.FrameSummary]] = None
+from .types import CancellationChain, TerminatedTaskInfo
 
 
 class TracedTask(asyncio.Task):
@@ -50,13 +32,15 @@ class TracedTask(asyncio.Task):
         self._termination_stack = None
         self.add_done_callback(self._trace_termination)
 
-    def get_trace_id(self) -> int:
-        return hash(
+    def get_trace_id(self) -> str:
+        h = hash(
             (
                 id(self),
                 self.get_name(),
             )
         )
+        b = struct.pack("P", h)
+        return base64.b32encode(b).rstrip(b"=").decode()
 
     # TODO: catch self-raised cancelled error
     def _trace_termination(self, _: asyncio.Task[Any]) -> None:
