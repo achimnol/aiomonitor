@@ -15,7 +15,20 @@ from asyncio.coroutines import _format_coroutine  # type: ignore
 from contextvars import ContextVar, copy_context
 from datetime import timedelta
 from types import TracebackType
-from typing import Any, Dict, Final, Iterable, List, Optional, TextIO, Tuple, Type
+from typing import (
+    Any,
+    Awaitable,
+    Dict,
+    Final,
+    Generator,
+    Iterable,
+    List,
+    Optional,
+    TextIO,
+    Tuple,
+    Type,
+    TypeVar,
+)
 
 import click
 import janus
@@ -61,6 +74,9 @@ command_done: ContextVar[asyncio.Event] = ContextVar("command_done")
 MONITOR_HOST: Final = "127.0.0.1"
 MONITOR_PORT: Final = 50101
 CONSOLE_PORT: Final = 50102
+
+T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
 
 
 @click.group(cls=AliasGroupMixin, add_help_option=False)
@@ -171,7 +187,7 @@ class Monitor:
 
     _created_traceback_chains: weakref.WeakKeyDictionary[
         asyncio.Task[Any],
-        asyncio.Task[Any],
+        weakref.ReferenceType[asyncio.Task[Any]],
     ]
     _created_tracebacks: weakref.WeakKeyDictionary[
         asyncio.Task[Any], List[traceback.FrameSummary]
@@ -208,7 +224,6 @@ class Monitor:
 
         log.info("Starting aiomonitor at %s:%d", host, port)
 
-        self._ui_thread = threading.Thread(target=self._ui_main, args=(), daemon=True)
         self._closed = False
         self._started = False
         self._console_tasks = weakref.WeakSet()
@@ -220,6 +235,9 @@ class Monitor:
         self._canceller_chain = {}
         self._canceller_stacks = {}
         self._terminated_history = []
+
+        self._ui_started = threading.Event()
+        self._ui_thread = threading.Thread(target=self._ui_main, args=(), daemon=True)
 
     @property
     def host(self) -> str:
@@ -244,6 +262,7 @@ class Monitor:
             self._monitored_loop.set_task_factory(self._create_task)
         self._event_loop_thread_id = threading.get_ident()
         self._ui_thread.start()
+        self._ui_started.wait()
 
         # Override the Click's stdout/stderr reference cache functions
         # to let them use the correct stdout handler.
@@ -280,37 +299,35 @@ class Monitor:
             self._monitored_loop.set_task_factory(self._original_task_factory)
             self._closed = True
 
-    async def _coro_wrapper(self, coro) -> Any:
-        myself = asyncio.current_task()
-        assert myself is not None
-        assert isinstance(myself, TracedTask)
-        myself._orig_coro = coro
+    async def _coro_wrapper(self, coro: Awaitable[T_co]) -> T_co:
         try:
             return await coro
-        except (asyncio.CancelledError, Exception):
-            myself._termination_stack = _extract_stack_from_frame(sys._getframe())[:-1]
-            raise
         except BaseException:
+            self._termination_stack = _extract_stack_from_frame(sys._getframe())[:-1]
             raise
 
-    def _create_task(self, loop, coro) -> asyncio.Task:
+    def _create_task(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        coro: Generator[Any, Any, T_co],
+    ) -> asyncio.Future[T_co]:
         assert loop is self._monitored_loop
         try:
             parent_task = asyncio.current_task()
         except RuntimeError:
             parent_task = None
         task = TracedTask(
-            # functools.wraps(coro)(self._coro_wrapper(coro)),
-            self._coro_wrapper(coro),
+            self._coro_wrapper(coro),  # type: ignore
             termination_info_queue=self._termination_info_queue.sync_q,
             cancellation_chain_queue=self._cancellation_chain_queue.sync_q,
             loop=self._monitored_loop,
         )
+        task._orig_coro = coro
         self._created_tracebacks[task] = _extract_stack_from_frame(sys._getframe())[
             :-1
         ]  # strip this wrapper method
         if parent_task is not None:
-            self._created_traceback_chains[task] = parent_task
+            self._created_traceback_chains[task] = weakref.ref(parent_task)
         return task
 
     def _ui_main(self) -> None:
@@ -332,6 +349,8 @@ class Monitor:
             interact=self._interact, host=self._host, port=self._port
         )
         telnet_server.start()
+        await asyncio.sleep(0)
+        self._ui_started.set()
         try:
             await self._ui_forever_future
         except asyncio.CancelledError:
@@ -357,14 +376,20 @@ class Monitor:
                 return
             self._terminated_tasks[update.id] = update
             self._terminated_history.append(update.id)
-            # canceller stack is put first in _ui_handle_cancellation_updates()
+            # canceller stack is already put in _ui_handle_cancellation_updates()
             if canceller_stack := self._canceller_stacks.pop(update.id, None):
                 update.canceller_stack = canceller_stack
-            while len(self._terminated_history) > 1000:
+            while len(self._terminated_history) > 30:
                 removed_id = self._terminated_history.pop(0)
                 self._terminated_tasks.pop(removed_id, None)
                 self._canceller_chain.pop(removed_id, None)
                 self._canceller_stacks.pop(removed_id, None)
+            # print(
+            #     f"{len(self._terminated_history)=} "
+            #     f"{len(self._terminated_tasks)=} "
+            #     f"{len(self._created_traceback_chains)=} "
+            #     f"{len(self._created_tracebacks)=} "
+            # )
 
     async def _ui_handle_cancellation_updates(self) -> None:
         while True:
@@ -376,6 +401,7 @@ class Monitor:
                 return
             self._canceller_stacks[update.target_id] = update.canceller_stack
             self._canceller_chain[update.target_id] = update.canceller_id
+            # print(f"{len(self._canceller_chain)=} {len(self._canceller_stacks)=} ")
 
     def print_ok(self, msg: str) -> None:
         print_formatted_text(
@@ -746,7 +772,8 @@ def do_where(ctx: click.Context, taskid: str) -> None:
     task_chain: List[asyncio.Task[Any]] = []
     while task is not None:
         task_chain.append(task)
-        task = self._created_traceback_chains.get(task)
+        task_ref = self._created_traceback_chains.get(task)
+        task = task_ref() if task_ref is not None else None
     prev_task = None
     for task in reversed(task_chain):
         if depth == 0:

@@ -5,8 +5,7 @@ import sys
 import time
 import traceback
 from asyncio.coroutines import _format_coroutine  # type: ignore
-from collections.abc import Coroutine
-from typing import Any, List, Optional
+from typing import Any, Generator, List, Optional
 
 import janus
 
@@ -15,7 +14,7 @@ from .utils import _extract_stack_from_frame
 
 
 class TracedTask(asyncio.Task):
-    _orig_coro: Coroutine
+    _orig_coro: Generator[Any, Any, Any]
     _termination_stack: Optional[List[traceback.FrameSummary]]
 
     def __init__(
@@ -72,14 +71,12 @@ class TracedTask(asyncio.Task):
             canceller_task = asyncio.current_task()
         except RuntimeError:
             canceller_task = None
-        if canceller_task is not None:
-            assert isinstance(canceller_task, TracedTask)
+        if canceller_task is not None and isinstance(canceller_task, TracedTask):
             canceller_stack = _extract_stack_from_frame(sys._getframe())[:-1]
-            self._cancellation_chain_queue.put_nowait(
-                CancellationChain(
-                    self.get_trace_id(),
-                    canceller_task.get_trace_id(),
-                    canceller_stack,
-                )
+            cancellation_chain = CancellationChain(
+                self.get_trace_id(),
+                canceller_task.get_trace_id(),
+                canceller_stack,
             )
-        return super().cancel(msg=msg)
+            self._cancellation_chain_queue.put_nowait(cancellation_chain)
+        return super().cancel(msg)
