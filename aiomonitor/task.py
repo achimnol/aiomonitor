@@ -4,14 +4,14 @@ import struct
 import sys
 import time
 import traceback
-from collections.abc import Coroutine
 from asyncio.coroutines import _format_coroutine  # type: ignore
+from collections.abc import Coroutine
 from typing import Any, List, Optional
 
 import janus
 
-from .utils import _extract_stack_from_frame
 from .types import CancellationChain, TerminatedTaskInfo
+from .utils import _extract_stack_from_frame
 
 
 class TracedTask(asyncio.Task):
