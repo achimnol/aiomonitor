@@ -143,6 +143,12 @@ def _extract_stack_from_frame(frame: FrameType) -> List[traceback.FrameSummary]:
     return stack
 
 
+def _extract_stack_from_exception(e: BaseException) -> List[traceback.FrameSummary]:
+    stack = traceback.StackSummary.extract(traceback.walk_tb(e.__traceback__))
+    stack.reverse()
+    return stack
+
+
 class AliasGroupMixin(click.Group):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

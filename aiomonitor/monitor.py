@@ -48,6 +48,7 @@ from .task import TracedTask
 from .types import CancellationChain, TerminatedTaskInfo
 from .utils import (
     AliasGroupMixin,
+    _extract_stack_from_exception,
     _extract_stack_from_frame,
     _extract_stack_from_task,
     _filter_stack,
@@ -302,8 +303,8 @@ class Monitor:
     async def _coro_wrapper(self, coro: Awaitable[T_co]) -> T_co:
         try:
             return await coro
-        except BaseException:
-            self._termination_stack = _extract_stack_from_frame(sys._getframe())[:-1]
+        except BaseException as e:
+            self._termination_stack = _extract_stack_from_exception(e)
             raise
 
     def _create_task(
