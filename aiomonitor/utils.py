@@ -31,7 +31,7 @@ def _format_terminated_task(tinfo: TerminatedTaskInfo) -> str:
     status = []
     if tinfo.cancelled:
         status.append("cancelled")
-    if tinfo.exc_repr:
+    if tinfo.exc_repr and not tinfo.cancelled:
         status.append(f"exc={tinfo.exc_repr}")
     return f"<TerminatedTask name={tinfo.name} coro={tinfo.coro} {' '.join(status)}>"
 

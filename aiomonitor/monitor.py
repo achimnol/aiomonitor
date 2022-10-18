@@ -301,10 +301,12 @@ class Monitor:
             self._closed = True
 
     async def _coro_wrapper(self, coro: Awaitable[T_co]) -> T_co:
+        myself = asyncio.current_task()
+        assert isinstance(myself, TracedTask)
         try:
             return await coro
         except BaseException as e:
-            self._termination_stack = _extract_stack_from_exception(e)
+            myself._termination_stack = _extract_stack_from_exception(e)[:-1]
             raise
 
     def _create_task(

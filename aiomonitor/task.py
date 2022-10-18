@@ -41,18 +41,13 @@ class TracedTask(asyncio.Task):
         b = struct.pack("P", h)
         return base64.b32encode(b).rstrip(b"=").decode()
 
-    # TODO: catch self-raised cancelled error
     def _trace_termination(self, _: asyncio.Task[Any]) -> None:
         self_id = self.get_trace_id()
-        if not self.cancelled() and self.exception() is None:
-            exc_repr = None
-            termination_stack = None  # completed
-        else:
-            if self.cancelled():
-                exc_repr = "<cancelled>"
-            else:
-                exc_repr = repr(self.exception())
-            termination_stack = self._termination_stack
+        exc_repr = (
+            repr(self.exception())
+            if not self.cancelled() and self.exception()
+            else None
+        )
         task_info = TerminatedTaskInfo(
             self_id,
             name=self.get_name(),
@@ -61,7 +56,7 @@ class TracedTask(asyncio.Task):
             exc_repr=exc_repr,
             started_at=self._started_at,
             terminated_at=time.perf_counter(),
-            termination_stack=termination_stack,
+            termination_stack=self._termination_stack,
             canceller_stack=None,
         )
         self._termination_info_queue.put_nowait(task_info)
