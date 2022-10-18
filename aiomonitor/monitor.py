@@ -209,6 +209,7 @@ class Monitor:
         console_port: int = CONSOLE_PORT,
         console_enabled: bool = True,
         hook_task_factory: bool = False,
+        max_termination_history: int = 1000,
         locals: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._monitored_loop = loop or asyncio.get_running_loop()
@@ -236,6 +237,7 @@ class Monitor:
         self._canceller_chain = {}
         self._canceller_stacks = {}
         self._terminated_history = []
+        self._max_termination_history = max_termination_history
 
         self._ui_started = threading.Event()
         self._ui_thread = threading.Thread(target=self._ui_main, args=(), daemon=True)
@@ -382,17 +384,11 @@ class Monitor:
             # canceller stack is already put in _ui_handle_cancellation_updates()
             if canceller_stack := self._canceller_stacks.pop(update.id, None):
                 update.canceller_stack = canceller_stack
-            while len(self._terminated_history) > 30:
+            while len(self._terminated_history) > self._max_termination_history:
                 removed_id = self._terminated_history.pop(0)
                 self._terminated_tasks.pop(removed_id, None)
                 self._canceller_chain.pop(removed_id, None)
                 self._canceller_stacks.pop(removed_id, None)
-            # print(
-            #     f"{len(self._terminated_history)=} "
-            #     f"{len(self._terminated_tasks)=} "
-            #     f"{len(self._created_traceback_chains)=} "
-            #     f"{len(self._created_tracebacks)=} "
-            # )
 
     async def _ui_handle_cancellation_updates(self) -> None:
         while True:
@@ -404,7 +400,6 @@ class Monitor:
                 return
             self._canceller_stacks[update.target_id] = update.canceller_stack
             self._canceller_chain[update.target_id] = update.canceller_id
-            # print(f"{len(self._canceller_chain)=} {len(self._canceller_stacks)=} ")
 
     def print_ok(self, msg: str) -> None:
         print_formatted_text(
@@ -654,9 +649,10 @@ def do_console(ctx: click.Context) -> None:
 
 
 @monitor_cli.command(name="ps", aliases=["p"])
+@click.option("-f", "--filter", "filter_", help="filter by coroutine name")
 @custom_help_option
 @auto_command_done
-def do_ps(ctx: click.Context) -> None:
+def do_ps(ctx: click.Context, filter_: str) -> None:
     """Show task table"""
     headers = (
         "Task ID",
@@ -669,55 +665,64 @@ def do_ps(ctx: click.Context) -> None:
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
     table_data: List[Tuple[str, str, str, str, str, str]] = [headers]
+    all_running_tasks = all_tasks(loop=self._monitored_loop)
 
-    for task in sorted(all_tasks(loop=self._monitored_loop), key=id):
+    for task in sorted(all_running_tasks, key=id):
         taskid = str(id(task))
-        if task:
-            if isinstance(task, TracedTask):
-                coro_repr = _format_coroutine(task._orig_coro).partition(" ")[0]
-            else:
-                coro_repr = _format_coroutine(task.get_coro()).partition(" ")[0]
-            creation_stack = self._created_tracebacks.get(task)
-            # Some values are masked as "-" when they are unavailable
-            # if it's the root task/coro or if the task factory is not applied.
-            if not creation_stack:
-                created_location = "-"
-            else:
-                creation_stack = _filter_stack(creation_stack)
-                fn = _format_filename(creation_stack[-1].filename)
-                lineno = creation_stack[-1].lineno
-                created_location = f"{fn}:{lineno}"
-            if isinstance(task, TracedTask):
-                running_since = _format_timedelta(
-                    timedelta(
-                        seconds=(time.perf_counter() - task._started_at),
-                    )
-                )
-            else:
-                running_since = "-"
-            table_data.append(
-                (
-                    taskid,
-                    task._state,
-                    task.get_name(),
-                    coro_repr,
-                    created_location,
-                    running_since,
+        if isinstance(task, TracedTask):
+            coro_repr = _format_coroutine(task._orig_coro).partition(" ")[0]
+        else:
+            coro_repr = _format_coroutine(task.get_coro()).partition(" ")[0]
+        if filter_ and filter_ not in coro_repr:
+            continue
+        creation_stack = self._created_tracebacks.get(task)
+        # Some values are masked as "-" when they are unavailable
+        # if it's the root task/coro or if the task factory is not applied.
+        if not creation_stack:
+            created_location = "-"
+        else:
+            creation_stack = _filter_stack(creation_stack)
+            fn = _format_filename(creation_stack[-1].filename)
+            lineno = creation_stack[-1].lineno
+            created_location = f"{fn}:{lineno}"
+        if isinstance(task, TracedTask):
+            running_since = _format_timedelta(
+                timedelta(
+                    seconds=(time.perf_counter() - task._started_at),
                 )
             )
+        else:
+            running_since = "-"
+        table_data.append(
+            (
+                taskid,
+                task._state,
+                task.get_name(),
+                coro_repr,
+                created_location,
+                running_since,
+            )
+        )
     table = AsciiTable(table_data)
     table.inner_row_border = False
     table.inner_column_border = False
-    stdout.write(f"{len(table_data) - 1} tasks running\n")
+    if filter_:
+        stdout.write(
+            f"{len(all_running_tasks)} tasks running "
+            f"(showing {len(table_data) - 1} tasks)\n"
+        )
+    else:
+        stdout.write(f"{len(all_running_tasks)} tasks running\n")
     stdout.write(table.table)
     stdout.write("\n")
     stdout.flush()
 
 
-@monitor_cli.command(name="ls-terminated")
+@monitor_cli.command(name="ps-terminated", aliases=["pt", "pst"])
+@click.option("-f", "--filter", "filter_", help="filter by coroutine name")
 @custom_help_option
 @auto_command_done
-def do_ls_terminated(ctx: click.Context) -> None:
+def do_ps_terminated(ctx: click.Context, filter_: str) -> None:
     """List recently terminated/cancelled tasks"""
     headers = (
         "Trace ID",
@@ -729,11 +734,14 @@ def do_ls_terminated(ctx: click.Context) -> None:
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
     table_data: List[Tuple[str, str, str, str, str]] = [headers]
+    terminated_tasks = self._terminated_tasks.values()
     for item in sorted(
-        self._terminated_tasks.values(),
+        terminated_tasks,
         key=lambda info: info.terminated_at,
         reverse=True,
     ):
+        if filter_ and filter_ not in item.coro:
+            continue
         run_since = _format_timedelta(
             timedelta(seconds=time.perf_counter() - item.started_at)
         )
@@ -752,7 +760,15 @@ def do_ls_terminated(ctx: click.Context) -> None:
     table = AsciiTable(table_data)
     table.inner_row_border = False
     table.inner_column_border = False
-    stdout.write(f"{len(table_data) - 1} tasks terminated (old ones may be stripped)\n")
+    if filter_:
+        stdout.write(
+            f"{len(terminated_tasks)} tasks running "
+            f"(showing {len(table_data) - 1} tasks)\n"
+        )
+    else:
+        stdout.write(
+            f"{len(terminated_tasks)} tasks terminated (old ones may be stripped)\n"
+        )
     stdout.write(table.table)
     stdout.write("\n")
     stdout.flush()
