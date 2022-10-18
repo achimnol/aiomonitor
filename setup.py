@@ -16,6 +16,7 @@ def read(f):
 
 
 install_requires = [
+    "attrs>=20",
     "click>=8",
     "janus>=1.0",
     "terminaltables",

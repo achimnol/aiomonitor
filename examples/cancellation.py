@@ -1,5 +1,4 @@
 import asyncio
-import tracemalloc
 
 import aiomonitor
 
@@ -70,12 +69,11 @@ async def main():
         chain_main_task = asyncio.create_task(chain_main())
         self_cancel_main_task = asyncio.create_task(self_cancel_main())
         unhandled_exc_main_task = asyncio.create_task(unhandled_exc_main())
-        tracemalloc.start()
         try:
-            while True:
-                await asyncio.sleep(10)
+            print("running some test workloads for 10 seconds ...")
+            await asyncio.sleep(10)
         finally:
-            print("cancelling")
+            print("stopping ...")
             chain_main_task.cancel()
             self_cancel_main_task.cancel()
             unhandled_exc_main_task.cancel()
@@ -85,13 +83,9 @@ async def main():
                 unhandled_exc_main_task,
                 return_exceptions=True,
             )
-
-            print("memory footprint")
-            snapshot = tracemalloc.take_snapshot()
-            top_stats = snapshot.statistics("lineno")
-            print("[ Top 10 ]")
-            for stat in top_stats[:10]:
-                print(stat)
+        print("waiting inspection ...")
+        while True:
+            await asyncio.sleep(10)
 
 
 if __name__ == "__main__":

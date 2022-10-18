@@ -1,9 +1,10 @@
-import dataclasses
 import traceback
 from typing import List, Optional
 
+from attrs import define
 
-@dataclasses.dataclass
+
+@define
 class TerminatedTaskInfo:
     id: str
     name: str
@@ -16,7 +17,7 @@ class TerminatedTaskInfo:
     exc_repr: Optional[str] = None
 
 
-@dataclasses.dataclass
+@define
 class CancellationChain:
     target_id: str
     canceller_id: str
