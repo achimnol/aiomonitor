@@ -649,7 +649,7 @@ def do_console(ctx: click.Context) -> None:
 
 
 @monitor_cli.command(name="ps", aliases=["p"])
-@click.option("-f", "--filter", "filter_", help="filter by coroutine name")
+@click.option("-f", "--filter", "filter_", help="filter by coroutine or task name")
 @custom_help_option
 @auto_command_done
 def do_ps(ctx: click.Context, filter_: str) -> None:
@@ -673,7 +673,7 @@ def do_ps(ctx: click.Context, filter_: str) -> None:
             coro_repr = _format_coroutine(task._orig_coro).partition(" ")[0]
         else:
             coro_repr = _format_coroutine(task.get_coro()).partition(" ")[0]
-        if filter_ and filter_ not in coro_repr:
+        if filter_ and (filter_ not in coro_repr and filter_ not in task.get_name()):
             continue
         creation_stack = self._created_tracebacks.get(task)
         # Some values are masked as "-" when they are unavailable
@@ -719,7 +719,7 @@ def do_ps(ctx: click.Context, filter_: str) -> None:
 
 
 @monitor_cli.command(name="ps-terminated", aliases=["pt", "pst"])
-@click.option("-f", "--filter", "filter_", help="filter by coroutine name")
+@click.option("-f", "--filter", "filter_", help="filter by coroutine or task name")
 @custom_help_option
 @auto_command_done
 def do_ps_terminated(ctx: click.Context, filter_: str) -> None:
@@ -740,7 +740,7 @@ def do_ps_terminated(ctx: click.Context, filter_: str) -> None:
         key=lambda info: info.terminated_at,
         reverse=True,
     ):
-        if filter_ and filter_ not in item.coro:
+        if filter_ and (filter_ not in item.coro and filter_ not in item.name):
             continue
         run_since = _format_timedelta(
             timedelta(seconds=time.perf_counter() - item.started_at)
