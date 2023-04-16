@@ -320,6 +320,7 @@ class Monitor:
         loop: asyncio.AbstractEventLoop,
         coro: Coroutine[Any, Any, T_co] | Generator[Any, None, T_co],
         *,
+        name: str | None = None,
         context: contextvars.Context | None = None,
     ) -> asyncio.Future[T_co]:
         assert loop is self._monitored_loop
@@ -334,7 +335,8 @@ class Monitor:
             cancellation_chain_queue=self._cancellation_chain_queue.sync_q,
             persistent=persistent,
             loop=self._monitored_loop,
-            context=context,
+            name=name,  # since Python 3.8
+            context=context,  # since Python 3.11
         )
         task._orig_coro = cast(Coroutine[Any, Any, T_co], coro)
         self._created_tracebacks[task] = _extract_stack_from_frame(sys._getframe())[
