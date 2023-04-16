@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import logging
 import os
@@ -318,6 +319,8 @@ class Monitor:
         self,
         loop: asyncio.AbstractEventLoop,
         coro: Coroutine[Any, Any, T_co] | Generator[Any, None, T_co],
+        *,
+        context: contextvars.Context | None = None,
     ) -> asyncio.Future[T_co]:
         assert loop is self._monitored_loop
         try:
@@ -331,6 +334,7 @@ class Monitor:
             cancellation_chain_queue=self._cancellation_chain_queue.sync_q,
             persistent=persistent,
             loop=self._monitored_loop,
+            context=context,
         )
         task._orig_coro = cast(Coroutine[Any, Any, T_co], coro)
         self._created_tracebacks[task] = _extract_stack_from_frame(sys._getframe())[
