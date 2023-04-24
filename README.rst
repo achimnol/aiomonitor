@@ -1,8 +1,9 @@
 aiomonitor-ng
 =============
 
-**aiomonitor-ng** is a (temporary) fork of **aiomonitor** with support for
-Python 3.10+ and additional usability & debuggability improvements.
+**UPDATE:** aiomonitor-ng is now merged back to **aiomonitor**
+as @achimnol became a maintainer of **aiomonitor**.
+Please follow the new versions and development there!
 
 **aiomonitor** is a module that adds monitor and cli capabilities
 for asyncio_ applications. Idea and code were borrowed from curio_ project.
